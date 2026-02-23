@@ -87,11 +87,11 @@ impl<T: ?Sized> UHandle<'_, T> {
         #[cfg(feature = "link")]
         {
             // check if the memory manager actually knows about the handle if it is not null
-            let ret = unsafe {
-                crate::labview::memory_api()
-                    .unwrap()
-                    .check_handle(self.0 as usize)
+            let api = match crate::labview::memory_api() {
+                Ok(api) => api,
+                Err(_) => return true, // if we can't check, assume valid since pointer is non-null
             };
+            let ret = unsafe { api.check_handle(self.0 as usize) };
             ret == crate::types::LVStatusCode::SUCCESS
         }
         #[cfg(not(feature = "link"))]
@@ -112,7 +112,10 @@ impl<T: ?Sized> Deref for UHandle<'_, T> {
 
     /// Extract the target type.
     ///
+    /// # Panics
+    ///
     /// This will panic if the handle or internal pointer is null.
+    /// Use [`UHandle::as_ref`] for a non-panicking alternative.
     fn deref(&self) -> &Self::Target {
         unsafe { self.as_ref().unwrap() }
     }
@@ -121,7 +124,10 @@ impl<T: ?Sized> Deref for UHandle<'_, T> {
 impl<T: ?Sized> DerefMut for UHandle<'_, T> {
     /// Deref to a mutable reference.
     ///
+    /// # Panics
+    ///
     /// This will panic if the handle or internal pointer is null.
+    /// Use [`UHandle::as_ref_mut`] for a non-panicking alternative.
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { self.as_ref_mut().unwrap() }
     }

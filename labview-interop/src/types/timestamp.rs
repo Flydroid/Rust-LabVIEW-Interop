@@ -75,7 +75,7 @@ impl LVTime {
         Self { seconds, fractions }
     }
 
-    /// Seperate out the u64 components.
+    /// Separate out the u64 components.
     #[inline]
     pub const fn to_parts(&self) -> (i64, u64) {
         (self.seconds, self.fractions)
@@ -179,7 +179,7 @@ mod chrono {
     }
 
     /// Implementation for owned types as well. Probably rarer but kept for backwards
-    /// compatability.
+    /// compatibility.
     impl TryFrom<LVTime> for DateTime<Utc> {
         type Error = LVTimeError;
 

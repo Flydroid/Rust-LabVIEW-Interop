@@ -62,6 +62,11 @@ impl ErrorClusterPtr<'_> {
     /// - `function` - The function to wrap. This is intended to be a closure for
     ///   easy use.
     ///
+    /// ## Panics
+    ///
+    /// Panics if the `ErrorClusterPtr` is null. Callers should ensure the pointer
+    /// is valid before calling this method.
+    ///
     /// ## Example
     ///
     /// ```rust
@@ -199,7 +204,7 @@ pub trait ToLvError {
 
     /// Write into the LabVIEW Error Pointer.
     ///
-    /// The pointer is the type that is recieved through the Call Library Node so
+    /// The pointer is the type that is received through the Call Library Node so
     /// there is no need to deal with references before this point.
     ///
     /// This requires the `link` feature to enable string manipulation.
@@ -248,15 +253,15 @@ mod tests {
 
     #[test]
     fn test_source_writer_with_description() {
-        let source = format_error_source("Rust", "An Error Occured");
-        let expected = "Rust\n<ERR>\nAn Error Occured";
+        let source = format_error_source("Rust", "An Error Occurred");
+        let expected = "Rust\n<ERR>\nAn Error Occurred";
         assert_eq!(source, expected)
     }
 
     #[test]
     fn test_source_writer_empty_source() {
-        let source = format_error_source("", "An Error Occured");
-        let expected = "<ERR>\nAn Error Occured";
+        let source = format_error_source("", "An Error Occurred");
+        let expected = "<ERR>\nAn Error Occurred";
         assert_eq!(source, expected)
     }
 }

@@ -66,8 +66,11 @@ pub type LStrOwned = OwnedUHandle<LStr>;
 
 impl LStr {
     /// Access the data from the string as a binary slice.
+    ///
+    /// If the internal size is negative, an empty slice is returned.
     pub fn as_slice(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.size as usize) }
+        let len = usize::try_from(self.size).unwrap_or(0);
+        unsafe { std::slice::from_raw_parts(self.data.as_ptr(), len) }
     }
 
     /// Access the data from the string as a mutable slice.
@@ -76,8 +79,11 @@ impl LStr {
     ///
     /// If you need to change the size you must access the handle that contains
     /// the data and access [`LStrHandle::set`]
+    ///
+    /// If the internal size is negative, an empty slice is returned.
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(self.data.as_mut_ptr(), self.size as usize) }
+        let len = usize::try_from(self.size).unwrap_or(0);
+        unsafe { std::slice::from_raw_parts_mut(self.data.as_mut_ptr(), len) }
     }
 
     /// Get the size of this LStr instance.
