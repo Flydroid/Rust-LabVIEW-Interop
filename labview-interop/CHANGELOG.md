@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `LVUserEvent::post_owned(data: T)` — takes ownership of the event data and
+  transfers LabVIEW-allocated handles (e.g. `LStrOwned`) to LabVIEW on a
+  successful post.  `PostLVUserEvent` makes a shallow copy of the cluster bytes,
+  so any handles inside `T` must not be freed by Rust after a successful call.
+  The existing `post(&mut T)` is safe for `Copy` types but causes use-after-free
+  for types that own LabVIEW handles; `post_owned` is the correct alternative
+  for those cases.
+
 ## [0.4.2](https://github.com/WiresmithTech/Rust-LabVIEW-Interop/compare/labview-interop-v0.4.1...labview-interop-v0.4.2) - 2025-05-14
 
 ### Fixed
