@@ -25,6 +25,7 @@ For **cross-system** messaging (Zenoh with Rust, Python, C++ participants), Prot
 | Approach | How It Works | Pros | Cons |
 |----------|-------------|------|------|
 | **Flatten To String** (Variant++ style) | LabVIEW VI flattens Variant to bytes; DLL parses bytes | Documented, stable, self-contained | Extra copy + serialization; unacceptable for large datasets |
+| **Flatten To String** (labview-variant-data) | Python library serializes/deserializes flattened format directly | Complete type coverage incl. Map/Set/Path; version-aware; cross-language | Still requires serialization; Python only |
 | **`LvVariantGetDataPtr`** (h5labview style) | Undocumented runtime fn gives raw data pointer; type descriptor passed separately | Zero-copy; direct memory access; proven in production | Undocumented API; could break between LV versions |
 
 ### Chosen Approach
@@ -68,6 +69,70 @@ Used by h5labview's `H5LVwrite`:
 | `get_variant_pointer()` | `typeconv.c:54` | Null-safe wrapper around `LvVariantGetDataPtr` |
 
 `H5LVquery_type` is the **reverse** of `recurse_typedesc` — it builds type descriptor bytes from type metadata. This is the reference implementation for our `TypeDescriptor::to_bytes()` serializer (Step 10).
+
+### labview-variant-data (Python)
+
+The [labview-variant-data](https://github.com/kleinsimon/labview-variant-data) library (MIT, Simon Klein) is a Python implementation that fully reverse-engineers the **flattened** Variant format (`Flatten To String` / `From String`). It works purely with serialized byte streams — no `LvVariantGetDataPtr`. Key findings from this library:
+
+#### Variant Versioning & Type Header LUT
+
+The flattened format has **version headers** that change the binary layout:
+
+- **Version 0** (`0x00000000`): Inline type descriptors — each section embeds its full type header adjacent to its data.
+- **Version 0x18008000** (modern, LabVIEW ~2018+): **Type header lookup table (LUT)** — all type descriptors are collected into a table at the top of the stream, and the data section references them by `u16` index. This deduplicates repeated types (e.g., arrays of clusters).
+
+Version 0x18008000 top-level layout:
+```
+[4B version: 0x18008000]
+[4B n_headers: u32]
+[N × type headers (same format as type descriptor sections)]
+[2B n_data_fields: u16, always 1 for top-level]
+[2B type_index → into header LUT]
+[data bytes (big-endian)]
+[4B n_attributes: u32]
+[N × attribute: {u32-len-prefixed name string, recursive variant}]
+```
+
+#### Variant Attributes
+
+LabVIEW Variants carry **named attributes** — key-value pairs where keys are strings and values are nested Variants. These are appended after the data payload in the flattened format and are separate from the data pointer returned by `LvVariantGetDataPtr`. Note: `LvVariantGetDataPtr` returns only the data pointer; attributes are a separate concern and are not accessible through it.
+
+#### Additional Type Codes
+
+The library handles several type codes not covered by h5labview:
+
+| Code | Type | Format Details |
+|------|------|----------------|
+| `0x00` | Void/Nil | No payload; used for empty Variants |
+| `0x32` | Path | `PTH0` magic + parts-based serialization |
+| `0x73` | Set | `[element_type_header] [u32 count] [elements...]` |
+| `0x74` | Map | `[u16 n_types=2] [key_header] [value_header] [u32 n_items] [k₀v₀ k₁v₁ ...]` |
+
+#### Flattened Data is Big-Endian
+
+All data values in the flattened format are **big-endian** (`>i4`, `>f8`, etc.). This is distinct from `LvVariantGetDataPtr` which returns **native-endian** in-memory data. The type descriptor header bytes are always big-endian regardless of access path.
+
+#### Enum Version-Dependent Padding
+
+Enum type headers have version-dependent trailing bytes: version >= `0x08508002` adds 2 bytes of padding in the header offset, while older versions add 1. Member names are pascal strings with `u8` length prefix.
+
+#### Timestamp Format
+
+LabVIEW epoch = **1904-01-01 UTC**. Timestamp = `[i64 seconds since epoch] [u64 fractional (2⁶⁴ scale)]`, 16 bytes total, big-endian.
+
+#### Waveform (Analog Signal) Details
+
+Waveform subcodes map to data types with codes different from the standard numeric type codes:
+
+| Subcode | dtype | Subcode | dtype |
+|---------|-------|---------|-------|
+| `0x14` | I8 | `0x11` | U8 |
+| `0x02` | I16 | `0x12` | U16 |
+| `0x15` | I32 | `0x13` | U32 |
+| `0x19` | I64 | `0x20` | U64 |
+| `0x05` | SGL | `0x03` | DBL |
+
+The analog waveform data layout is: `[timestamp 16B] [dt: f64] [u32 n_elements] [elements...] [error cluster: bool+i32+string] [attributes variant]`.
 
 ## Architecture
 
@@ -148,8 +213,10 @@ For clusters, the payload contains `[element count (2B BE)]` followed by N recur
 | `0x07` | U32 | `0x15`–`0x17` | Enum (U8/U16/U32) |
 | `0x08` | U64 | `0x19`–`0x1E` | Physical Quantity |
 | `0x21` | Boolean | `0x30` | String |
-| `0x40` | Array | `0x50` | Cluster |
-| `0x53` | Variant | `0x54` | Waveform |
+| `0x32` | Path | `0x40` | Array |
+| `0x50` | Cluster | `0x53` | Variant |
+| `0x54` | Waveform | `0x73` | Set |
+| `0x74` | Map | `0x00` | Void/Nil |
 
 ## Dynamic Sizes: Arrays and Strings
 
@@ -271,10 +338,14 @@ pub enum LvTypeCode {
     PhysU16 = 0x1E,
     Boolean = 0x21,
     String = 0x30,
+    Path = 0x32,
     Array = 0x40,
     Cluster = 0x50,
     Variant = 0x53,
     Waveform = 0x54,
+    Set = 0x73,
+    Map = 0x74,
+    Void = 0x00,
 }
 ```
 
@@ -321,6 +392,19 @@ pub enum TypeDescriptor {
         units: Vec<(u16, i16)>, // (unit_code, power)
         name: Option<String>,
     },
+    Path {
+        name: Option<String>,
+    },
+    Map {
+        key: Box<TypeDescriptor>,
+        value: Box<TypeDescriptor>,
+        name: Option<String>,
+    },
+    Set {
+        element: Box<TypeDescriptor>,
+        name: Option<String>,
+    },
+    Void,
 }
 ```
 
@@ -366,6 +450,10 @@ Key parsing logic per type code:
 - **Array** (`0x40`): `[ndims: u16 BE] [0xFFFFFFFF × ndims]` then recurse for element type.
 - **Cluster** (`0x50`): `[element_count: u16 BE]` then recurse N times.
 - **Waveform** (`0x54`): `[subcode: u16 BE]`. Subcode 6 = Timestamp (skip cluster contents). Others = numeric waveform.
+- **Path** (`0x32`): Skip 4-byte `0xFFFFFFFF` marker. Read optional name. (Data is `PTH0` magic + path parts.)
+- **Map** (`0x74`): `[n_types: u16 BE, always 2] [key_type_header] [value_type_header]`. Data: `[n_items: u32 BE] [k₀v₀k₁v₁...]`.
+- **Set** (`0x73`): `[element_type_header]`. Data: `[n_items: u32 BE] [elements...]`.
+- **Void** (`0x00`): No payload, no data.
 
 No external parsing library needed — the format is simple enough for a hand-rolled cursor with `from_be_bytes()`.
 
@@ -562,6 +650,11 @@ Run via `cargo test -- --test-threads=1`.
 | Size/alignment: cluster {U8, U32} on Win64 | offset_of(1)=4 (padded), total=8 |
 | Size/alignment: cluster {U8, U32} on Win32 | offset_of(1)=1 (packed), total=5 |
 | Round-trip: parse → to_bytes → parse | Equality for all supported types |
+| Parse Map of {String → I32} | Key/value type headers and nested recursion |
+| Parse Set of DBL | Element type header and count |
+| Parse Path | `0x32` type code, `0xFFFFFFFF` marker |
+| Parse Void | `0x00` type code, empty payload |
+| Cross-validate with labview-variant-data | Parse hex bytes from Python test vectors |
 | Invalid type code | Returns `Err(InvalidTypeDescriptor)` |
 | Truncated input | Returns `Err(InvalidTypeDescriptor)` |
 
@@ -721,6 +814,8 @@ For simple deployments where all endpoints are LabVIEW, the raw LabVIEW flattene
 | `VariantApi` as separate `WrapperApi` struct | Isolated from `MemoryApi`/`SyncApi` so failure to load doesn't break the crate |
 | DVRs explicitly excluded | No C API in LabVIEW 2026 `extcode.h`; no path to implement from external code |
 | Error codes in 542,000 range | Matches existing crate convention |
+| Map, Set, Path, Void type codes added | Discovered via labview-variant-data; needed for complete type descriptor coverage |
+| Flattened format versioning noted but deferred | Version 0 vs 0x18008000 LUT format matters only for flattened-stream parsing, not for typestr-only parsing |
 
 ## References
 
@@ -735,11 +830,14 @@ For simple deployments where all endpoints are LabVIEW, the raw LabVIEW flattene
 - **h5labview** `h5labview.h` — `LVALIGNMENT`, `DO_ALIGN` macros, LabVIEW type structs
 - **h5labview** `H5Tquery.vi` + `TypeToVariant.vi` (XNodeSupport) — LabVIEW-side flow: generate typestr → create empty Variant
 - **VariantLabVIEWpp** — C++ `std::variant` approach using flattened strings (rejected for large data)
+- **labview-variant-data** — Python library (MIT, Simon Klein) that fully reverse-engineers the LabVIEW Variant flattened format
 - **LabVIEW 2026** `extcode.h` — Confirmed no Variant C API, no DVR API
 - **labview-interop** existing patterns — `UHandle`, `LVVariant` (opaque placeholder), `labview_layout!`, `WrapperApi` linkage, `MemoryApi` (`NumericArrayResize`, `DSNewHandle`, `DSSetHandleSize`)
 - **Protocol Buffers** — [protobuf.dev](https://protobuf.dev/) — wire format specification, language guide
 - **prost** — [docs.rs/prost](https://docs.rs/prost/) — Rust Protobuf implementation; `prost-build` for `.proto` → Rust codegen
 - **Zenoh Protobuf encoding** — `zenoh::Encoding::APPLICATION_PROTOBUF`
+- **labview-variant-data** — [github.com/kleinsimon/labview-variant-data](https://github.com/kleinsimon/labview-variant-data) — Python library (MIT) that fully reverse-engineers the LabVIEW Variant flattened format. Covers versioning (v0 and v0x18008000), type header LUT, variant attributes, Map (`0x74`), Set (`0x73`), Path (`0x32`), Void (`0x00`), Enum version-dependent padding, Timestamp (1904 epoch, i64+u64), analog waveform subcodes. Useful as cross-validation reference and for understanding the flattened stream structure.
+- **NI Knowledge Base** — [kA00Z0000015CmaSAE](https://knowledge.ni.com/KnowledgeArticleDetails?id=kA00Z0000015CmaSAE&l=en-US) — Information on LabVIEW flattened data format versioning
 ## Future Work
 
 ### `.proto` → LabVIEW `.ctl` Generator
