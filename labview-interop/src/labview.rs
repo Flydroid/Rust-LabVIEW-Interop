@@ -244,3 +244,48 @@ pub struct MemoryApi {
         total_new_size: usize,
     ) -> LVStatusCode,
 }
+
+/// Runtime linkage for undocumented `LvVariant*` functions.
+///
+/// This is isolated from `MemoryApi`/`SyncApi` so that failure to load
+/// doesn't break the rest of the crate.
+///
+/// **WARNING**: These are undocumented LabVIEW runtime functions.
+/// The prototypes are reverse-engineered from h5labview and dumpbin exports.
+/// They may change or be removed in future LabVIEW versions.
+#[cfg(feature = "variant")]
+#[derive(WrapperApi)]
+pub struct VariantApi {
+    /// Extracts a raw data pointer from a LabVIEW Variant handle.
+    ///
+    /// Takes a dereferenced variant handle (`*variant_handle`) and returns
+    /// a pointer to the variant's underlying data.
+    ///
+    /// Returns NULL for empty variants.
+    #[dlopen2_name = "LvVariantGetDataPtr"]
+    variant_get_data_ptr: unsafe extern "C" fn(handle: *mut c_void) -> *mut c_void,
+
+    /// Returns a pointer to the in-memory type descriptor bytes for this variant.
+    ///
+    /// Takes a dereferenced variant handle (`*variant_handle`) and returns
+    /// a pointer to type descriptor bytes in **little-endian** byte order.
+    /// The first two LE bytes give the total section length.
+    ///
+    /// Returns NULL for empty variants.
+    #[dlopen2_name = "GetTypeFromLvVariant"]
+    get_type_from_variant: unsafe extern "C" fn(handle: *mut c_void) -> *const u8,
+
+    /// Returns non-zero if the variant is empty (contains no data).
+    ///
+    /// Takes a dereferenced variant handle (`*variant_handle`).
+    #[dlopen2_name = "LvVariantIsEmpty"]
+    variant_is_empty: unsafe extern "C" fn(handle: *mut c_void) -> i32,
+}
+
+#[cfg(feature = "variant")]
+static VARIANT_API: LazyLock<Result<Container<VariantApi>>> = LazyLock::new(load_container);
+
+#[cfg(feature = "variant")]
+pub fn variant_api() -> Result<&'static Container<VariantApi>> {
+    VARIANT_API.as_ref().map_err(|e| e.clone())
+}

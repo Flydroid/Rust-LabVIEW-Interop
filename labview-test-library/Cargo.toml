@@ -10,6 +10,7 @@ publish = false
 labview-interop = { path = "../labview-interop", features = [
     "link",
     "ndarray",
+    "variant",
 ] }
 ndarray = "0.16.1"
 

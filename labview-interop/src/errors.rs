@@ -413,6 +413,19 @@ pub enum InternalError {
     HandleCreationFailed = 542_005,
     #[error("Invalid numeric status code for conversion into enumerated error code")]
     InvalidMgErrorCode = 542_006,
+    #[error("Invalid type descriptor: {0}")]
+    InvalidTypeDescriptor(String) = 542_007,
+    #[error("Variant handle is empty or null")]
+    EmptyVariant = 542_008,
+    #[error("Variant handle is broken (LvVariantGetDataPtr returned sentinel)")]
+    BrokenVariant = 542_009,
+    #[error("LvVariantGetDataPtr not available in this LabVIEW runtime")]
+    VariantApiUnavailable = 542_010,
+    #[error("Variant type mismatch: expected {expected}, found {found}")]
+    VariantTypeMismatch {
+        expected: &'static str,
+        found: &'static str,
+    } = 542_011,
 }
 
 impl From<&InternalError> for LVStatusCode {
@@ -425,6 +438,11 @@ impl From<&InternalError> for LVStatusCode {
             InternalError::ArrayDimensionMismatch => 542_004,
             InternalError::HandleCreationFailed => 542_005,
             InternalError::InvalidMgErrorCode => 542_006,
+            InternalError::InvalidTypeDescriptor(_) => 542_007,
+            InternalError::EmptyVariant => 542_008,
+            InternalError::BrokenVariant => 542_009,
+            InternalError::VariantApiUnavailable => 542_010,
+            InternalError::VariantTypeMismatch { .. } => 542_011,
         };
         err_i32.into()
     }

@@ -8,6 +8,7 @@ mod memory_manager;
 mod strings;
 mod sync;
 mod timestamps;
+mod variants;
 
 /// tests for arrays.
 pub use crate::arrays::*;
@@ -24,3 +25,5 @@ pub use crate::strings::*;
 pub use crate::sync::*;
 /// Tests for timestamps.
 pub use crate::timestamps::*;
+/// Tests for variant access.
+pub use crate::variants::*;

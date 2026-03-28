@@ -8,10 +8,7 @@ mod lv_errors;
 mod lv_status;
 pub mod string;
 pub mod timestamp;
-
-use std::ffi::c_void;
-
-use crate::memory::UHandle;
+mod variant;
 
 //surface some of the common types.
 #[cfg(feature = "link")]
@@ -25,6 +22,9 @@ pub use string::LStrHandle;
 #[cfg(feature = "link")]
 pub use string::LStrOwned;
 pub use timestamp::LVTime;
+pub use variant::LVVariant;
+#[cfg(feature = "variant")]
+pub use variant::VariantCompatible;
 
 /// Wrap a struct declaration to have the packing attributes
 /// set for exchanging the data with the LabVIEW cluster type.
@@ -92,13 +92,6 @@ macro_rules! labview_layout {
         $struct
     };
 }
-
-/// Represents a LabVIEW Variant. The internal structure is undefined
-/// by NI and therefore unavailable.
-///
-/// This is available as a placeholder in clusters etc.
-#[repr(transparent)]
-pub struct LVVariant<'variant>(UHandle<'variant, c_void>);
 
 labview_layout!(
     /// Represents the LabVIEW waveform type where:
