@@ -5,64 +5,225 @@ use crate::memory::UHandle;
 #[cfg(feature = "variant")]
 use crate::typedesc::{LvTypeCode, TypeDescriptor};
 
-/// Trait for Rust types that can be read from a LabVIEW Variant.
-///
-/// Implement this for types that have a direct mapping to a LabVIEW
-/// type code, enabling type-checked reads via [`LVVariant::read_as`].
+/// Trait for Rust types that can be extracted from a LabVIEW Variant.
 ///
 /// This is the Rust equivalent of LabVIEW's "Variant To Data" — it
 /// verifies the variant's type descriptor matches `T` before reading.
+///
+/// Each implementor defines:
+/// - How to check type compatibility ([`is_compatible`](VariantCompatible::is_compatible))
+/// - How to extract the value from a raw data pointer ([`read_from_variant_ptr`](VariantCompatible::read_from_variant_ptr))
+///
+/// # Built-in implementations
+///
+/// | Rust type | LabVIEW type | Notes |
+/// |-----------|-------------|-------|
+/// | `i8`..`i64`, `u8`..`u64` | Integer scalars | Bitwise copy via `read_unaligned` |
+/// | `f32`, `f64` | SGL, DBL | Bitwise copy via `read_unaligned` |
+/// | `LVBool` | Boolean | Bitwise copy via `read_unaligned` |
+/// | `String` | String | Dereferences LStr handle, copies to owned `String` |
+/// | `Vec<T>` | 1D Array of T | Dereferences array handle, copies elements. `T` must be `VariantCompatible + Copy` |
+///
+/// # Implementing for clusters
+///
+/// For LabVIEW clusters containing only scalar fields, define a `repr(C)` struct
+/// using [`labview_layout!`](crate::labview_layout) and implement this trait manually.
+/// The struct must derive `Copy + Clone` since it is read via `read_unaligned`.
+///
+/// ```rust,ignore
+/// use labview_interop::{labview_layout, types::LVBool};
+/// use labview_interop::typedesc::{TypeDescriptor, LvTypeCode};
+/// use labview_interop::types::VariantCompatible;
+/// use std::ffi::c_void;
+///
+/// labview_layout!(
+///     #[derive(Copy, Clone)]
+///     pub struct SensorReading {
+///         pub temperature: f64,
+///         pub pressure: f64,
+///         pub valid: LVBool,
+///     }
+/// );
+///
+/// impl VariantCompatible for SensorReading {
+///     const TYPE_NAME: &'static str = "Cluster{DBL,DBL,Boolean}";
+///
+///     fn is_compatible(td: &TypeDescriptor) -> bool {
+///         matches!(td, TypeDescriptor::Cluster { fields, .. }
+///             if fields.len() == 3
+///             && f64::is_compatible(&fields[0])
+///             && f64::is_compatible(&fields[1])
+///             && LVBool::is_compatible(&fields[2])
+///         )
+///     }
+///
+///     unsafe fn read_from_variant_ptr(
+///         ptr: *mut c_void,
+///     ) -> labview_interop::errors::Result<Self> {
+///         Ok(std::ptr::read_unaligned(ptr as *const Self))
+///     }
+/// }
+///
+/// // Then in a CLFN:
+/// // let reading: SensorReading = unsafe { variant.read_as::<SensorReading>()? };
+/// ```
+///
+/// **Important:** This pattern only works for clusters whose fields are all
+/// `Copy` (scalars, booleans, enums). Clusters containing strings, arrays,
+/// or other handle-based types require field-by-field extraction — see the
+/// `String` and `Vec<T>` implementations for the handle dereferencing pattern.
 #[cfg(feature = "variant")]
-pub trait VariantCompatible: Copy {
-    /// The expected LabVIEW type code for this Rust type.
-    const TYPE_CODE: LvTypeCode;
-
+pub trait VariantCompatible: Sized {
     /// Human-readable type name for error messages.
     const TYPE_NAME: &'static str;
 
     /// Returns true if the given type descriptor is compatible with this Rust type.
+    fn is_compatible(td: &TypeDescriptor) -> bool;
+
+    /// Extract a value from the variant's raw data pointer.
     ///
-    /// The default implementation checks for an exact type code match.
-    /// Override this for types that accept multiple type codes (e.g. enums).
-    fn is_compatible(td: &TypeDescriptor) -> bool {
-        td.type_code() == Self::TYPE_CODE
-    }
+    /// # Safety
+    ///
+    /// `ptr` must be a valid pointer as returned by `LvVariantGetDataPtr`,
+    /// pointing to data whose type matches the result of `is_compatible`.
+    unsafe fn read_from_variant_ptr(ptr: *mut c_void) -> crate::errors::Result<Self>;
 }
 
+// ---------------------------------------------------------------------------
+// Scalar implementations
+// ---------------------------------------------------------------------------
+
 #[cfg(feature = "variant")]
-macro_rules! impl_variant_compatible {
+macro_rules! impl_variant_scalar {
     ($rust_type:ty, $lv_code:expr, $name:expr) => {
         impl VariantCompatible for $rust_type {
-            const TYPE_CODE: LvTypeCode = $lv_code;
             const TYPE_NAME: &'static str = $name;
+
+            fn is_compatible(td: &TypeDescriptor) -> bool {
+                td.type_code() == $lv_code
+            }
+
+            unsafe fn read_from_variant_ptr(ptr: *mut c_void) -> crate::errors::Result<Self> {
+                Ok(std::ptr::read_unaligned(ptr as *const Self))
+            }
         }
     };
 }
 
 #[cfg(feature = "variant")]
-impl_variant_compatible!(i8,  LvTypeCode::I8,  "I8");
+impl_variant_scalar!(i8,  LvTypeCode::I8,  "I8");
 #[cfg(feature = "variant")]
-impl_variant_compatible!(i16, LvTypeCode::I16, "I16");
+impl_variant_scalar!(i16, LvTypeCode::I16, "I16");
 #[cfg(feature = "variant")]
-impl_variant_compatible!(i32, LvTypeCode::I32, "I32");
+impl_variant_scalar!(i32, LvTypeCode::I32, "I32");
 #[cfg(feature = "variant")]
-impl_variant_compatible!(i64, LvTypeCode::I64, "I64");
+impl_variant_scalar!(i64, LvTypeCode::I64, "I64");
 #[cfg(feature = "variant")]
-impl_variant_compatible!(u8,  LvTypeCode::U8,  "U8");
+impl_variant_scalar!(u8,  LvTypeCode::U8,  "U8");
 #[cfg(feature = "variant")]
-impl_variant_compatible!(u16, LvTypeCode::U16, "U16");
+impl_variant_scalar!(u16, LvTypeCode::U16, "U16");
 #[cfg(feature = "variant")]
-impl_variant_compatible!(u32, LvTypeCode::U32, "U32");
+impl_variant_scalar!(u32, LvTypeCode::U32, "U32");
 #[cfg(feature = "variant")]
-impl_variant_compatible!(u64, LvTypeCode::U64, "U64");
+impl_variant_scalar!(u64, LvTypeCode::U64, "U64");
 #[cfg(feature = "variant")]
-impl_variant_compatible!(f32, LvTypeCode::Sgl, "SGL");
+impl_variant_scalar!(f32, LvTypeCode::Sgl, "SGL");
 #[cfg(feature = "variant")]
-impl_variant_compatible!(f64, LvTypeCode::Dbl, "DBL");
+impl_variant_scalar!(f64, LvTypeCode::Dbl, "DBL");
+
 #[cfg(feature = "variant")]
 impl VariantCompatible for super::LVBool {
-    const TYPE_CODE: LvTypeCode = LvTypeCode::Boolean;
     const TYPE_NAME: &'static str = "Boolean";
+
+    fn is_compatible(td: &TypeDescriptor) -> bool {
+        td.type_code() == LvTypeCode::Boolean
+    }
+
+    unsafe fn read_from_variant_ptr(ptr: *mut c_void) -> crate::errors::Result<Self> {
+        Ok(std::ptr::read_unaligned(ptr as *const Self))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// String implementation
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "variant")]
+impl VariantCompatible for String {
+    const TYPE_NAME: &'static str = "String";
+
+    fn is_compatible(td: &TypeDescriptor) -> bool {
+        td.type_code() == LvTypeCode::String
+    }
+
+    unsafe fn read_from_variant_ptr(ptr: *mut c_void) -> crate::errors::Result<Self> {
+        use crate::errors::InternalError;
+        use crate::types::string::LStr;
+
+        // data_ptr for a String variant points to an LStrHandle (*mut *mut LStr).
+        // Dereference the handle chain to reach the LStr.
+        let handle_ptr = *(ptr as *const *mut *mut LStr);
+        if handle_ptr.is_null() {
+            return Err(InternalError::EmptyVariant.into());
+        }
+        let lstr_ptr = *handle_ptr;
+        if lstr_ptr.is_null() {
+            return Err(InternalError::EmptyVariant.into());
+        }
+
+        let lstr = &*lstr_ptr;
+        Ok(lstr.to_rust_string().into_owned())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Vec<T> implementation for 1D arrays
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "variant")]
+impl<T: VariantCompatible + Copy> VariantCompatible for Vec<T> {
+    const TYPE_NAME: &'static str = "Array";
+
+    fn is_compatible(td: &TypeDescriptor) -> bool {
+        matches!(td, TypeDescriptor::Array { ndims: 1, element, .. }
+            if T::is_compatible(element))
+    }
+
+    unsafe fn read_from_variant_ptr(ptr: *mut c_void) -> crate::errors::Result<Self> {
+        use crate::errors::InternalError;
+
+        // data_ptr for an Array variant points to an LVArrayHandle (*mut *mut LVArray<1, T>).
+        // The LVArray layout is: [i32 dim_size] [T; dim_size]
+        // We work with raw pointers to avoid alignment issues on Linux/32-bit.
+
+        let handle_ptr = *(ptr as *const *mut *mut u8);
+        if handle_ptr.is_null() {
+            return Err(InternalError::EmptyVariant.into());
+        }
+        let array_ptr = *handle_ptr;
+        if array_ptr.is_null() {
+            return Err(InternalError::EmptyVariant.into());
+        }
+
+        // Read dim_size (i32) from the start of the array struct
+        let dim_size = std::ptr::read_unaligned(array_ptr as *const i32);
+        if dim_size < 0 {
+            return Err(InternalError::BrokenVariant.into());
+        }
+        let count = dim_size as usize;
+
+        // Data starts after the i32 dim_size field
+        let data_start = (array_ptr as *const u8).add(std::mem::size_of::<i32>());
+
+        let mut result = Vec::with_capacity(count);
+        let elem_size = std::mem::size_of::<T>();
+        for i in 0..count {
+            let elem_ptr = data_start.add(i * elem_size) as *const T;
+            result.push(std::ptr::read_unaligned(elem_ptr));
+        }
+
+        Ok(result)
+    }
 }
 
 /// Represents a LabVIEW Variant. The internal structure is undefined
@@ -189,12 +350,20 @@ impl LVVariant<'_> {
         Ok(result)
     }
 
-    /// Reads a scalar value from the variant with type-checking.
+    /// Reads a value from the variant with type-checking.
     ///
     /// This is the Rust equivalent of LabVIEW's **Variant To Data**.
     /// It calls [`type_descriptor`](LVVariant::type_descriptor) to verify the
-    /// variant's type matches `T`, then reads the value using `read_unaligned`
-    /// (safe on all platforms regardless of LabVIEW alignment rules).
+    /// variant's type matches `T`, then extracts the value using the
+    /// type's [`VariantCompatible::read_from_variant_ptr`] implementation.
+    ///
+    /// # Supported types
+    ///
+    /// - **Scalars**: `i8`..`i64`, `u8`..`u64`, `f32`, `f64`, `LVBool`
+    /// - **String**: returns an owned `String` (copies from LabVIEW handle)
+    /// - **1D arrays**: `Vec<T>` where `T` is a scalar (copies from LabVIEW handle)
+    /// - **Clusters**: user-defined `Copy` structs via [`labview_layout!`](crate::labview_layout)
+    ///   (see [`VariantCompatible`] trait docs for how to implement)
     ///
     /// # Safety
     ///
@@ -206,10 +375,12 @@ impl LVVariant<'_> {
     /// - `VariantApiUnavailable` if the variant API cannot be loaded
     /// - `EmptyVariant` if the variant is null or empty
     ///
-    /// # Example (inside a CLFN)
+    /// # Examples (inside a CLFN)
     ///
     /// ```rust,ignore
     /// let value: i32 = unsafe { variant.read_as::<i32>()? };
+    /// let text: String = unsafe { variant.read_as::<String>()? };
+    /// let data: Vec<f64> = unsafe { variant.read_as::<Vec<f64>>()? };
     /// ```
     pub unsafe fn read_as<T: VariantCompatible>(&self) -> crate::errors::Result<T> {
         use crate::errors::InternalError;
@@ -224,7 +395,7 @@ impl LVVariant<'_> {
         }
 
         let ptr = self.data_ptr()?;
-        Ok(std::ptr::read_unaligned(ptr as *const T))
+        T::read_from_variant_ptr(ptr)
     }
 
     /// Returns a typed reference to the variant's data, interpreting the raw
