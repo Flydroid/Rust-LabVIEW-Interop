@@ -104,17 +104,17 @@ labview_layout!(
     /// Represents the LabVIEW waveform type where:
     ///
     /// * t0: The start time of the data.
-    /// * dt: The time delte between samples.
+    /// * dt: The time delta between samples.
     /// * data: A 1d array of type T
     ///
     /// ## Padding
     ///
-    /// The padding scheme here is wierd and unexpected and has been reverse engineered
+    /// The padding scheme here is weird and unexpected and has been reverse engineered
     /// based on real calls. No idea why the padding exists whether it is documented anywhere.
     pub struct Waveform<'waveform, T> {
         /// The timestamp for the first data value.
         pub t0: timestamp::LVTime,
-        /// The time in seconds beween samples.
+        /// The time in seconds between samples.
         pub dt: f64,
         /// A 1D array of the contained data.
         pub data: LVArrayHandle<'waveform, 1, T>,

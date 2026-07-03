@@ -73,7 +73,9 @@ impl<const D: usize, T> LVArray<D, T> {
     ///
     /// # Safety
     ///
-    /// If the index is out of the range then it is undefined behaviour.
+    /// * The index must be less than the total element count of the array.
+    ///   If the index is out of range then this is undefined behaviour.
+    /// * The data pointer must be properly aligned for type `T`.
     pub unsafe fn get_value_unchecked(&self, index: usize) -> T {
         let data_ptr = std::ptr::addr_of!(self.data) as *const T;
         let element_ptr = data_ptr.add(index);
@@ -89,7 +91,9 @@ impl<const D: usize, T> LVArray<D, T> {
     ///
     /// # Safety
     ///
-    /// If the index is out of range then it is undefined behaviour.
+    /// * The index must be less than the total element count of the array.
+    ///   If the index is out of range then this is undefined behaviour.
+    /// * The data pointer must be properly aligned for type `T`.
     pub unsafe fn set_value_unchecked(&mut self, index: usize, value: T) {
         let data_ptr = std::ptr::addr_of_mut!(self.data) as *mut T;
         let element_ptr = data_ptr.add(index);
@@ -102,7 +106,7 @@ impl<const D: usize, T> LVArray<D, T> {
     /// Get the data component as a slice.
     ///
     /// Note: for muti-dimension arrays this is a raw structure so you will
-    /// need to understand the dimenisons and data ordering.
+    /// need to understand the dimensions and data ordering.
     ///
     /// For 1D arrays this can just be used as the data contents.
     pub fn data_as_slice(&self) -> &[T] {

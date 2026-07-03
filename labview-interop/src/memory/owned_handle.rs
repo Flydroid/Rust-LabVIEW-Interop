@@ -188,7 +188,7 @@ impl<T: ?Sized> Drop for OwnedUHandle<T> {
                 .to_specific_result(())
         });
         if let Err(e) | Ok(Err(e)) = result {
-            println!("Error freeing handle from LV: {e}");
+            eprintln!("Error freeing handle from LV: {e}");
         }
     }
 }
@@ -240,6 +240,12 @@ impl<T: ?Sized + LVCopy + 'static> UHandle<'_, T> {
 }
 
 impl<T: ?Sized + LVCopy + 'static> Clone for OwnedUHandle<T> {
+    /// Clone the owned handle by creating a new handle with a copy of the data.
+    ///
+    /// # Panics
+    ///
+    /// Panics if there is not enough memory to create the new handle.
+    /// Use [`OwnedUHandle::try_clone`] for a non-panicking alternative.
     fn clone(&self) -> Self {
         self.try_clone().unwrap()
     }
