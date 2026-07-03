@@ -162,9 +162,16 @@ fn parse_section(cursor: &mut Cursor) -> Result<TypeDescriptor, LVInteropError> 
         )));
     }
 
-    let flags = cursor.read_u8()?;
+    // The flags/code pair is a single u16 (`flags << 8 | code`) stored in the
+    // descriptor's byte order. Big-endian (flattened) descriptors therefore lay
+    // out `[flags][code]`, while native little-endian descriptors from
+    // `GetTypeFromLvVariant` lay out `[code][flags]` — verified empirically
+    // against a LabVIEW 2025 x64 EDVR descriptor (see
+    // docs/variant-implementation-plan.md, "Verified Findings").
+    let flags_code = cursor.read_u16()?;
+    let flags = (flags_code >> 8) as u8;
     let has_name = (flags & 0x40) != 0;
-    let code_byte = cursor.read_u8()?;
+    let code_byte = (flags_code & 0xFF) as u8;
 
     let code = LvTypeCode::try_from(code_byte)
         .map_err(|_| parse_err(&format!("unknown type code: 0x{code_byte:02X}")))?;
@@ -294,6 +301,27 @@ fn parse_section(cursor: &mut Cursor) -> Result<TypeDescriptor, LVInteropError> 
             }
         }
 
+        // Refnum 0x70
+        LvTypeCode::Refnum => {
+            let kind = cursor.read_u16()?;
+            // Data-bearing refnums (e.g. DVRs) embed a nested type descriptor
+            // for the referenced type. Other refnum kinds have no payload
+            // beyond the kind word. Only one empirical sample exists (external
+            // DVR, kind 0x0020), so detect a nested section conservatively:
+            // it must announce a plausible length that fits in this section.
+            let referenced = if looks_like_nested_section(cursor, section_end) {
+                Some(Box::new(parse_section(cursor)?))
+            } else {
+                None
+            };
+            let name = read_name_if(cursor, has_name, section_end)?;
+            TypeDescriptor::Refnum {
+                kind,
+                referenced,
+                name,
+            }
+        }
+
         // Set 0x73
         LvTypeCode::Set => {
             let element = parse_section(cursor)?;
@@ -325,6 +353,25 @@ fn parse_section(cursor: &mut Cursor) -> Result<TypeDescriptor, LVInteropError> 
     cursor.pos = section_end;
 
     Ok(td)
+}
+
+/// Heuristic check whether the bytes at the cursor start a nested type
+/// descriptor section (used for refnum payloads, where a name may follow
+/// directly instead). A nested section must announce a length of at least 4
+/// that fits entirely before `section_end`. A pascal-string name read as a
+/// u16 essentially never satisfies this because its second byte is a
+/// printable character, producing a huge length in at least one byte order.
+fn looks_like_nested_section(cursor: &Cursor, section_end: usize) -> bool {
+    let remaining = section_end.saturating_sub(cursor.pos);
+    if remaining < 4 {
+        return false;
+    }
+    let bytes = [cursor.data[cursor.pos], cursor.data[cursor.pos + 1]];
+    let len = match cursor.byte_order {
+        ByteOrder::BigEndian => u16::from_be_bytes(bytes),
+        ByteOrder::NativeEndian => u16::from_ne_bytes(bytes),
+    } as usize;
+    (4..=remaining).contains(&len)
 }
 
 /// Read the optional pascal string name if the `has_name` flag is set.
@@ -803,12 +850,13 @@ mod tests {
     // ---- Little-endian tests ----
 
     /// Build a native-endian section (multi-byte fields in platform byte order).
+    /// The flags/code pair is a single u16 (`flags << 8 | code`), so on a
+    /// little-endian host the bytes are `[code][flags]`.
     fn make_section_native(code: u8, payload: &[u8]) -> Vec<u8> {
         let total_len = 4 + payload.len();
         let mut buf = Vec::with_capacity(total_len);
         buf.extend_from_slice(&(total_len as u16).to_ne_bytes());
-        buf.push(0x00);
-        buf.push(code);
+        buf.extend_from_slice(&(code as u16).to_ne_bytes()); // flags = 0x00
         buf.extend_from_slice(payload);
         if buf.len() % 2 != 0 {
             buf.push(0x00);
@@ -883,5 +931,74 @@ mod tests {
             }
             _ => panic!("expected Array, got {td:?}"),
         }
+    }
+
+    /// Real descriptor bytes captured from `GetTypeFromLvVariant` on
+    /// LabVIEW 2025 x64: `To Variant` of an external DVR referencing a
+    /// 2-D DBL array (see docs/variant-implementation-plan.md,
+    /// "Verified Findings"). This is a golden vector, NOT built by the
+    /// same helpers as the parser — it validates real-world layout,
+    /// including the `[code][flags]` native byte order.
+    #[test]
+    #[cfg(target_endian = "little")]
+    fn parse_native_real_edvr_descriptor() {
+        #[rustfmt::skip]
+        let bytes: [u8; 42] = [
+            0x2A, 0x00,             // len = 42 (LE)
+            0x70, 0x40,             // code 0x70 refnum, flags 0x40 has-name
+            0x20, 0x00,             // refnum kind 0x0020
+            0x1A, 0x00,             // nested section len = 26
+            0x40, 0x00,             //   code 0x40 array, flags 0
+            0x02, 0x00,             //   ndims = 2
+            0xFF, 0xFF, 0xFF, 0xFF, //   dim placeholder
+            0xFF, 0xFF, 0xFF, 0xFF, //   dim placeholder
+            0x0C, 0x00,             //   element section len = 12
+            0x0A, 0x40,             //     code 0x0A DBL, flags 0x40 has-name
+            0x07, b'N', b'u', b'm', b'e', b'r', b'i', b'c',
+            0x08, b'E', b'D', b'V', b'R', b'_', b'R', b'e', b'f',
+            0x00,                   // pad to even length
+        ];
+        let td = parse_native(&bytes).unwrap();
+        match td {
+            TypeDescriptor::Refnum {
+                kind,
+                referenced: Some(referenced),
+                name,
+            } => {
+                assert_eq!(kind, 0x0020);
+                assert_eq!(name.as_deref(), Some("EDVR_Ref"));
+                match *referenced {
+                    TypeDescriptor::Array { ndims, element, .. } => {
+                        assert_eq!(ndims, 2);
+                        assert_eq!(
+                            *element,
+                            TypeDescriptor::Numeric {
+                                code: LvTypeCode::Dbl,
+                                name: Some("Numeric".to_string()),
+                            }
+                        );
+                    }
+                    other => panic!("expected Array, got {other:?}"),
+                }
+            }
+            other => panic!("expected Refnum with referenced type, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_refnum_without_referenced_type() {
+        // A refnum carrying only the kind word and a name — no nested type.
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&0x0001u16.to_be_bytes());
+        let bytes = make_named_section(0x70, &payload, "queue");
+        let td = parse(&bytes).unwrap();
+        assert_eq!(
+            td,
+            TypeDescriptor::Refnum {
+                kind: 1,
+                referenced: None,
+                name: Some("queue".to_string()),
+            }
+        );
     }
 }

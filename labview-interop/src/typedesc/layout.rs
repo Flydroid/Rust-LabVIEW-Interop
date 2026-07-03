@@ -157,6 +157,10 @@ impl TypeDescriptor {
 
             TypeDescriptor::Timestamp { .. } => 16, // i64 seconds + u64 fractional
 
+            // Refnum runtime data is a 4-byte magic cookie (verified for an
+            // external DVR inside a Variant — the cookie sits at data offset 0).
+            TypeDescriptor::Refnum { .. } => 4,
+
             TypeDescriptor::Void => 0,
         }
     }
@@ -203,6 +207,9 @@ impl TypeDescriptor {
                 // h5labview: align to U32 (4) not U64
                 capped_alignment(4)
             }
+
+            // Magic cookie: u32
+            TypeDescriptor::Refnum { .. } => capped_alignment(4),
 
             TypeDescriptor::Void => 1,
         }

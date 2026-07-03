@@ -1,8 +1,12 @@
 //! NDArray support for the LabVIEW array types. This requires 64 bit to
 //! access internal array elements.
 
+#[cfg(feature = "link")]
 use super::memory::NumericArrayResizable;
-use super::{LVArray, LVArrayHandle};
+use super::LVArray;
+#[cfg(feature = "link")]
+use super::LVArrayHandle;
+#[cfg(feature = "link")]
 use crate::errors::Result;
 use ndarray::{ArrayView, ArrayViewMut, Dim, Ix};
 
@@ -30,7 +34,10 @@ macro_rules! array_with_dim {
             }
         }
 
-        // Implement the copy methods.
+        // Implement the copy methods. These require the memory manager to
+        // resize the destination handle, so they are only available with the
+        // `link` feature.
+        #[cfg(feature = "link")]
         impl<'array, T: Copy + NumericArrayResizable + 'array> LVArrayHandle<'array, $dim, T> {
             /// Set the LabVIEW array from the ND Array.
             ///
@@ -52,16 +59,9 @@ macro_rules! array_with_dim {
             where
                 T: 'a,
             {
-                // If the size isn't right either resize if available or error.
+                // If the size isn't right, resize to match.
                 if array.raw_dim() != self.ndarray_dim() {
-                    #[cfg(feature = "link")]
-                    {
-                        self.resize_array(array.shape().try_into()?)?;
-                    }
-                    #[cfg(not(feature = "link"))]
-                    {
-                        return Err(LVInteropError::ArrayDimensionMismatch);
-                    }
+                    self.resize_array(array.shape().try_into()?)?;
                 }
 
                 let lv_array = unsafe { self.as_ref_mut()? };

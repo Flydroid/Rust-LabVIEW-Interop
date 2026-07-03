@@ -21,8 +21,11 @@
 
 mod layout;
 mod parser;
+mod serializer;
 mod types;
+mod value;
 
 pub use layout::{align_to, platform_alignment};
 pub use parser::{parse, parse_native, parse_with_array, parse_with_order, ByteOrder};
 pub use types::{LvTypeCode, PhysicalUnit, TypeDescriptor};
+pub use value::{read_value, LvValue};

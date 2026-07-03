@@ -212,8 +212,14 @@ impl<T: VariantCompatible + Copy> VariantCompatible for Vec<T> {
         }
         let count = dim_size as usize;
 
-        // Data starts after the i32 dim_size field
-        let data_start = (array_ptr as *const u8).add(std::mem::size_of::<i32>());
+        // Data starts after the i32 dim_size field, aligned to the element's
+        // LabVIEW alignment (natural alignment capped at the platform max —
+        // e.g. f64 data begins at offset 8 on Win64, offset 4 on packed
+        // 32-bit). h5labview: `data = DO_ALIGN(data + 4*ndims, align)`.
+        let platform = crate::typedesc::platform_alignment().max(1);
+        let elem_align = std::mem::align_of::<T>().min(platform);
+        let data_offset = crate::typedesc::align_to(std::mem::size_of::<i32>(), elem_align);
+        let data_start = (array_ptr as *const u8).add(data_offset);
 
         let mut result = Vec::with_capacity(count);
         let elem_size = std::mem::size_of::<T>();
@@ -396,6 +402,38 @@ impl LVVariant<'_> {
 
         let ptr = self.data_ptr()?;
         T::read_from_variant_ptr(ptr)
+    }
+
+    /// Reads the variant's data into a dynamically-typed [`LvValue`] tree,
+    /// guided entirely by the variant's own type descriptor.
+    ///
+    /// This is the fully dynamic counterpart of [`read_as`](LVVariant::read_as):
+    /// no Rust type needs to be declared up front, so a single code path can
+    /// handle any supported LabVIEW type — scalars, strings, N-D arrays,
+    /// clusters (nested, with mixed field types), timestamps, enums and
+    /// refnums. See [`crate::typedesc::read_value`] for the supported set and
+    /// [`crate::typedesc::LvValue`] for the canonical string rendering used
+    /// by the integration test oracle.
+    ///
+    /// # Safety
+    ///
+    /// The variant handle must be valid and alive. The type descriptor and
+    /// data pointer are both obtained from the variant itself, so they are
+    /// consistent by construction.
+    ///
+    /// # Errors
+    ///
+    /// - `VariantApiUnavailable` if the variant API cannot be loaded
+    /// - `EmptyVariant` if the handle is null or the variant has no data
+    /// - `InvalidTypeDescriptor` / `BrokenVariant` on malformed data
+    pub unsafe fn to_value(&self) -> crate::errors::Result<crate::typedesc::LvValue> {
+        let td = self.type_descriptor()?;
+        // Void variants carry no data — don't ask for a data pointer.
+        if matches!(td, crate::typedesc::TypeDescriptor::Void) {
+            return Ok(crate::typedesc::LvValue::Void);
+        }
+        let ptr = self.data_ptr()?;
+        crate::typedesc::read_value(&td, ptr)
     }
 
     /// Returns a typed reference to the variant's data, interpreting the raw

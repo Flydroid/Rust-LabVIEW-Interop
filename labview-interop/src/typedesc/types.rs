@@ -55,6 +55,9 @@ pub enum LvTypeCode {
     Cluster = 0x50,
     Variant = 0x53,
     Waveform = 0x54,
+    /// Refnum (DVR, queue, event, …). Data-bearing refnums (e.g. DVRs)
+    /// carry a nested type descriptor for the referenced type.
+    Refnum = 0x70,
     Set = 0x73,
     Map = 0x74,
 }
@@ -147,6 +150,7 @@ impl LvTypeCode {
             LvTypeCode::Cluster => "Cluster",
             LvTypeCode::Variant => "Variant",
             LvTypeCode::Waveform => "Waveform",
+            LvTypeCode::Refnum => "Refnum",
             LvTypeCode::Set => "Set",
             LvTypeCode::Map => "Map",
         }
@@ -231,6 +235,21 @@ pub enum TypeDescriptor {
     Variant {
         name: Option<String>,
     },
+    /// Refnum (code 0x70) — DVR, queue, event, etc.
+    ///
+    /// The runtime data for a refnum is a 4-byte magic cookie.
+    /// Data-bearing refnum kinds (e.g. a DVR) carry a nested type descriptor
+    /// for the referenced type, observed empirically for external DVRs
+    /// (see docs/variant-implementation-plan.md, "Verified Findings").
+    Refnum {
+        /// Refnum kind word as found in the descriptor (e.g. 0x0020 for an
+        /// external DVR). Semantics are not fully mapped yet.
+        kind: u16,
+        /// The type the reference points at (a DVR's element type).
+        /// `None` for refnum kinds that carry no data type.
+        referenced: Option<Box<TypeDescriptor>>,
+        name: Option<String>,
+    },
     /// Map (dictionary) with key and value types (code 0x74)
     Map {
         key: Box<TypeDescriptor>,
@@ -261,6 +280,7 @@ impl TypeDescriptor {
             | TypeDescriptor::PhysicalQuantity { name, .. }
             | TypeDescriptor::Path { name, .. }
             | TypeDescriptor::Variant { name, .. }
+            | TypeDescriptor::Refnum { name, .. }
             | TypeDescriptor::Map { name, .. }
             | TypeDescriptor::Set { name, .. } => name.as_deref(),
             TypeDescriptor::Void => None,
@@ -281,6 +301,7 @@ impl TypeDescriptor {
             TypeDescriptor::PhysicalQuantity { base_type, .. } => *base_type,
             TypeDescriptor::Path { .. } => LvTypeCode::Path,
             TypeDescriptor::Variant { .. } => LvTypeCode::Variant,
+            TypeDescriptor::Refnum { .. } => LvTypeCode::Refnum,
             TypeDescriptor::Map { .. } => LvTypeCode::Map,
             TypeDescriptor::Set { .. } => LvTypeCode::Set,
             TypeDescriptor::Void => LvTypeCode::Void,
