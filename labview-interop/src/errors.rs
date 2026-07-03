@@ -426,6 +426,8 @@ pub enum InternalError {
         expected: &'static str,
         found: &'static str,
     } = 542_011,
+    #[error("Variant data pointer is not sufficiently aligned for the requested type (requires {required}-byte alignment)")]
+    VariantDataMisaligned { required: usize } = 542_012,
 }
 
 impl From<&InternalError> for LVStatusCode {
@@ -443,6 +445,7 @@ impl From<&InternalError> for LVStatusCode {
             InternalError::BrokenVariant => 542_009,
             InternalError::VariantApiUnavailable => 542_010,
             InternalError::VariantTypeMismatch { .. } => 542_011,
+            InternalError::VariantDataMisaligned { .. } => 542_012,
         };
         err_i32.into()
     }

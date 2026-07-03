@@ -455,26 +455,141 @@ impl LVVariant<'_> {
         crate::typedesc::read_value(&td, ptr)
     }
 
-    /// Returns a typed reference to the variant's data, interpreting the raw
-    /// data pointer as type `T`.
+    /// Returns a typed shared reference to the variant's data — the
+    /// **checked zero-copy** access path.
+    ///
+    /// Before creating the reference this verifies:
+    ///
+    /// 1. **Type**: the variant's own type descriptor is compatible with `T`
+    ///    ([`VariantCompatible::is_compatible`]) — mis-wired variants error
+    ///    with `VariantTypeMismatch` instead of reinterpreting memory.
+    /// 2. **Alignment**: the data pointer satisfies `align_of::<T>()` — a
+    ///    misaligned Rust reference is undefined behaviour even if never
+    ///    dereferenced. On packed 32-bit platforms multi-byte types will
+    ///    generally fail this check; use [`read_as`](LVVariant::read_as)
+    ///    there (it copies via unaligned reads).
+    ///
+    /// The returned reference borrows `self`, so within Rust it cannot
+    /// outlive the variant parameter.
+    ///
+    /// # Safety
+    ///
+    /// - The variant handle must be valid and alive (guaranteed by LabVIEW
+    ///   for the duration of the CLFN call).
+    /// - The reference (or any pointer derived from it) must not be retained
+    ///   past the CLFN return — LabVIEW is free to move or free the
+    ///   variant's memory afterwards. For buffers that must outlive the
+    ///   call, use an EDVR-based design instead.
+    ///
+    /// # Errors
+    ///
+    /// - `VariantTypeMismatch` if the descriptor is not compatible with `T`
+    /// - `VariantDataMisaligned` if the data pointer is under-aligned for `T`
+    /// - `VariantApiUnavailable` / `EmptyVariant` as for
+    ///   [`data_ptr`](LVVariant::data_ptr)
+    pub unsafe fn as_typed_ref<T: VariantCompatible>(&self) -> crate::errors::Result<&T> {
+        let td = self.type_descriptor()?;
+        let ptr = self.data_ptr()?;
+        check_typed_access::<T>(&td, ptr)?;
+        Ok(&*(ptr as *const T))
+    }
+
+    /// Returns a typed reference to the variant's data **without any type or
+    /// alignment validation** — the escape hatch for layouts that have no
+    /// [`VariantCompatible`] implementation (e.g. waveform structs).
+    ///
+    /// Prefer [`as_typed_ref`](LVVariant::as_typed_ref) (checked) or
+    /// [`read_as`](LVVariant::read_as) (checked, copying) wherever possible.
     ///
     /// # Safety
     ///
     /// The caller must ensure that:
-    /// - `T` matches the actual variant data layout exactly
-    /// - The variant handle is valid and alive
-    /// - The data is properly aligned for `T`
-    ///
-    /// # Note
-    ///
-    /// Prefer [`read_as`](LVVariant::read_as) for scalar types — it validates
-    /// the type and handles alignment safely. This method is provided for
-    /// advanced use cases where you need a reference to complex data.
-    pub unsafe fn as_typed_ref<T>(&self) -> crate::errors::Result<&T> {
+    /// - `T` matches the actual variant data layout exactly (verify via
+    ///   [`type_descriptor`](LVVariant::type_descriptor))
+    /// - The data is properly aligned for `T` — creating a misaligned
+    ///   reference is undefined behaviour
+    /// - The variant handle is valid and alive, and the reference is not
+    ///   retained past the CLFN return
+    pub unsafe fn as_typed_ref_unchecked<T>(&self) -> crate::errors::Result<&T> {
         let ptr = self.data_ptr()?;
         let typed_ptr = ptr as *const T;
         typed_ptr
             .as_ref()
             .ok_or_else(|| crate::errors::InternalError::EmptyVariant.into())
+    }
+}
+
+/// Pure validation behind [`LVVariant::as_typed_ref`]: descriptor
+/// compatibility and pointer alignment for `T`. Factored out so it is
+/// unit-testable without a LabVIEW runtime.
+#[cfg(feature = "variant")]
+fn check_typed_access<T: VariantCompatible>(
+    td: &TypeDescriptor,
+    ptr: *const c_void,
+) -> crate::errors::Result<()> {
+    use crate::errors::InternalError;
+
+    if !T::is_compatible(td) {
+        return Err(InternalError::VariantTypeMismatch {
+            expected: T::TYPE_NAME,
+            found: td.type_code().as_str(),
+        }
+        .into());
+    }
+    let required = std::mem::align_of::<T>();
+    if (ptr as usize) % required != 0 {
+        return Err(InternalError::VariantDataMisaligned { required }.into());
+    }
+    Ok(())
+}
+
+#[cfg(all(test, feature = "variant"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_typed_access_accepts_matching_aligned() {
+        let td = TypeDescriptor::Numeric {
+            code: LvTypeCode::I32,
+            name: None,
+        };
+        let value = 42i32;
+        let ptr = &value as *const i32 as *const c_void;
+        assert!(check_typed_access::<i32>(&td, ptr).is_ok());
+    }
+
+    #[test]
+    fn check_typed_access_rejects_wrong_type() {
+        let td = TypeDescriptor::Numeric {
+            code: LvTypeCode::Dbl,
+            name: None,
+        };
+        let value = 42i32;
+        let ptr = &value as *const i32 as *const c_void;
+        let err = check_typed_access::<i32>(&td, ptr).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::errors::LVInteropError::InternalError(
+                crate::errors::InternalError::VariantTypeMismatch { .. }
+            )
+        ));
+    }
+
+    #[test]
+    fn check_typed_access_rejects_misaligned() {
+        let td = TypeDescriptor::Numeric {
+            code: LvTypeCode::I64,
+            name: None,
+        };
+        // Deliberately odd address within a real buffer.
+        let buf = [0u8; 16];
+        let ptr = unsafe { buf.as_ptr().add(1) } as *const c_void;
+        let err = check_typed_access::<i64>(&td, ptr).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::errors::LVInteropError::InternalError(
+                crate::errors::InternalError::VariantDataMisaligned { required: 8 }
+            )
+        ));
     }
 }
