@@ -16,7 +16,7 @@ For **cross-system** messaging (Zenoh with Rust, Python, C++ participants), Prot
 
 - NI does not document the internal memory layout of a LabVIEW Variant. The `extcode.h` header (LabVIEW 2026) forward-declares `class LvVariant` as opaque with zero public methods.
 - No C API exists for creating, reading, writing, or managing Variants from external code.
-- DVRs (Data Value References) are also inaccessible — no C API in `extcode.h`.
+- DVRs (Data Value References): *regular* in-memory DVRs have no C API in `extcode.h`. **However**, *external* DVRs (EDVRs) ARE reachable via undocumented runtime exports (`EDVR_CreateReference`, `EDVR_AddRefWithContext`, …) — see the **Verified Findings** section below.
 - However, `LvVariantGetDataPtr` is an **undocumented** LabVIEW runtime export that returns a read/write pointer to the variant's underlying data.
 - LabVIEW can create correctly-typed empty Variants from type descriptor bytes using `TypeToVariant.vi` (XNodeSupport). This solves the "return path" problem — the DLL never needs to create Variants, only read/write their data.
 
@@ -110,7 +110,7 @@ The library handles several type codes not covered by h5labview:
 
 #### Flattened Data is Big-Endian
 
-All data values in the flattened format are **big-endian** (`>i4`, `>f8`, etc.). This is distinct from `LvVariantGetDataPtr` which returns **native-endian** in-memory data. The type descriptor header bytes are always big-endian regardless of access path.
+All data values in the flattened format are **big-endian** (`>i4`, `>f8`, etc.), as are the flattened type-descriptor header bytes — because the flattened form is a *canonical, portable wire format*. This is distinct from the **in-memory** access path: `LvVariantGetDataPtr` returns native-endian data, and `GetTypeFromLvVariant` returns a native-endian type descriptor (little-endian length on x64). **Endianness depends on the access path** — flattened = big-endian, in-memory = host-native. (This corrects an earlier claim that the header is "always big-endian regardless of access path"; verified empirically — see the **Verified Findings** section. The Rust `parse_native`/`from_ne_bytes` was already correct.)
 
 #### Enum Version-Dependent Padding
 
@@ -217,6 +217,9 @@ For clusters, the payload contains `[element count (2B BE)]` followed by N recur
 | `0x50` | Cluster | `0x53` | Variant |
 | `0x54` | Waveform | `0x73` | Set |
 | `0x74` | Map | `0x00` | Void/Nil |
+| `0x70` | Refnum (DVR, queue, …) | | |
+
+Refnum (`0x70`) is **not** in h5labview's `recurse_typedesc`; it was added from the EDVR verification (see **Verified Findings**). A data-bearing refnum (e.g. a DVR) wraps a referenced type descriptor that is parsed recursively.
 
 ## Dynamic Sizes: Arrays and Strings
 
@@ -345,6 +348,7 @@ pub enum LvTypeCode {
     Waveform = 0x54,
     Set = 0x73,
     Map = 0x74,
+    Refnum = 0x70,
     Void = 0x00,
 }
 ```
@@ -404,6 +408,12 @@ pub enum TypeDescriptor {
         element: Box<TypeDescriptor>,
         name: Option<String>,
     },
+    Refnum {
+        /// The type the reference points at (a DVR's element type, e.g. a
+        /// 2-D DBL array). `None` for refnum kinds that carry no data type.
+        referenced: Option<Box<TypeDescriptor>>,
+        name: Option<String>,
+    },
     Void,
 }
 ```
@@ -453,6 +463,7 @@ Key parsing logic per type code:
 - **Path** (`0x32`): Skip 4-byte `0xFFFFFFFF` marker. Read optional name. (Data is `PTH0` magic + path parts.)
 - **Map** (`0x74`): `[n_types: u16 BE, always 2] [key_type_header] [value_type_header]`. Data: `[n_items: u32 BE] [k₀v₀k₁v₁...]`.
 - **Set** (`0x73`): `[element_type_header]`. Data: `[n_items: u32 BE] [elements...]`.
+- **Refnum** (`0x70`): `[refnum-kind: u16]` then, for data-bearing refnums (DVR, etc.), a nested type-descriptor for the referenced type — recurse into it. Observed for an external-DVR refnum (in-memory, native-endian): `70 40 | 20 00 | 1A 00 | <referenced type descriptor>` (kind word + inner length + inner TD → a 2-D DBL array). Confirm the kind/length fields against more samples before relying on the exact sub-structure; the referenced TD parses with the normal recursion. (Added from EDVR verification — see **Verified Findings**.)
 - **Void** (`0x00`): No payload, no data.
 
 No external parsing library needed — the format is simple enough for a hand-rolled cursor with `from_be_bytes()`.
@@ -812,10 +823,80 @@ For simple deployments where all endpoints are LabVIEW, the raw LabVIEW flattene
 | Type descriptor is LabVIEW-side responsibility | LabVIEW VIs extract and pass the type descriptor bytes; Rust does not extract type info from the Variant handle itself |
 | Platform-aware alignment via `cfg` attributes | Matches LabVIEW's actual memory layout rules per platform |
 | `VariantApi` as separate `WrapperApi` struct | Isolated from `MemoryApi`/`SyncApi` so failure to load doesn't break the crate |
-| DVRs explicitly excluded | No C API in LabVIEW 2026 `extcode.h`; no path to implement from external code |
+| DVRs partially reachable | *Regular* DVRs have no C API. *External* DVRs (EDVRs) ARE reachable via undocumented `EDVR_*` runtime exports (verified 2026-07-03); backing memory must be C-owned. See **Verified Findings** |
 | Error codes in 542,000 range | Matches existing crate convention |
 | Map, Set, Path, Void type codes added | Discovered via labview-variant-data; needed for complete type descriptor coverage |
 | Flattened format versioning noted but deferred | Version 0 vs 0x18008000 LUT format matters only for flattened-stream parsing, not for typestr-only parsing |
+
+## Verified Findings — EDVR + Variant (2026-07-03)
+
+Verified against **LabVIEW 2025 (64-bit, Windows)** using the `j-medland/labview-edvr-cpp-example` external DVR plus an instrumented probe added to its `edvr.cpp` (`h5lv_variant_probe`, logging to a file). These supersede several assumptions above where noted.
+
+### EDVR runtime exports exist — external DVRs ARE reachable
+
+Contrary to "DVRs are inaccessible", the LabVIEW 2026 runtime exports a full External Data Value Reference API (`docs/labview-2026-exports.txt`, ordinals 0x197–0x19E):
+
+```
+EDVR_AddRef            EDVR_AddRefWithContext
+EDVR_CreateReference   EDVR_CreateReferenceNoLock
+EDVR_GetCurrentContext
+EDVR_ReleaseRef        EDVR_ReleaseRefWithContext
+EDVR_UnlockRefWithContext
+```
+
+Undocumented (same risk class as `LvVariantGetDataPtr`) but present and resolvable via `GetProcAddress`. Caveats:
+- Only **external** DVRs are reachable; regular in-memory DVRs still have no API.
+- The backing memory must be **C-owned**: the DLL allocates it and attaches it via `EDVR_CreateReference`; LabVIEW creates only the empty typed refnum (right-click the DVR refnum constant → "External"). LabVIEW does not expose an existing LabVIEW-owned array this way.
+
+### A refnum inside a Variant → the cookie is recoverable in C
+
+`To Variant(EDVR_Ref)` then `LvVariantGetDataPtr(handle)` returns a pointer whose **first 4 bytes are the refnum cookie** (`u32`). Verified stable across runs (cookie always at `vdata+0`; observed form `0xXXX00000`). That cookie feeds `EDVR_AddRefWithContext` directly to borrow the buffer zero-copy.
+
+- The Variant must reach the CLFN as **Adapt to Type → Pointers to Handles** (arrives `void***`); `LvVariantGetDataPtr(*variant)` is correct. A bare refnum wired directly, or the wrong passing mode, faults LabVIEW (error 0x449).
+- Variant **attributes** are *not* in the data-pointer region — use the dedicated exports `LvVariantGetAttribute` / `LvVariantSetAttribute` (and typed `LvVariantCStrGet*Attr` / `LvVariantPStr*Attr`). This makes "typestring as a Variant attribute" a first-class, supported transport.
+
+### `GetTypeFromLvVariant` — the Variant is self-describing
+
+`GetTypeFromLvVariant(handle)` (same handle level as `LvVariantGetDataPtr`; `*handle` returns null) returns a pointer to the **in-memory** type descriptor. This removes the need for a separate typestr wire — the Variant alone carries its type.
+
+Observed descriptor for `To Variant` of an external DVR referencing a 2-D DBL array (42 bytes):
+
+```
+2A 00          len = 42  (LITTLE-ENDIAN)
+70 40          type 0x70 = REFNUM,  flags 0x40 = has-name
+20 00 1A 00    refnum subtype / referenced-type length
+40 00          type 0x40 = ARRAY, no name
+02 00          ndims = 2
+FF FF FF FF ×2 two dimensions
+0C 00 0A 40    len 12, type 0x0A = DBL, flags 0x40 = has-name
+07 "Numeric"   element name
+08 "EDVR_Ref"  refnum name
+```
+
+Decoded: **DVR refnum "EDVR_Ref" → 2-D Array → DBL "Numeric"** — the descriptor encodes the DVR's *referenced* element type and shape, not merely "it's a refnum".
+
+Observed in-memory header layout: `[u16 length, little-endian][u8 type code][u8 flags (0x40 = has name)]`. This differs from the flattened-format header documented above (big-endian; verify flag/code byte roles per access path before relying on them).
+
+### New type code for the parser: `0x70` (refnum)
+
+`recurse_typedesc` (h5labview) and the Rust `typedesc` parser do not handle refnums. To drive HDF5/Rust types from a DVR-variant descriptor, add a `0x70` case that **recurses into the referenced type** (here, the 2-D DBL array). Everything inside the refnum wrapper is already handled.
+
+### End-to-end result
+
+From the **Variant alone**, in pure C, both halves are available:
+- **Data:** `LvVariantGetDataPtr` → cookie at `vdata+0` → `EDVR_AddRefWithContext` → zero-copy buffer.
+- **Type:** `GetTypeFromLvVariant` → full descriptor incl. referenced element type/shape.
+
+### Corrections to earlier assumptions in this document
+
+- **Endianness is per-access-path**, not "always big-endian": flattened = big-endian; in-memory (`GetTypeFromLvVariant` / `LvVariantGetDataPtr`) = host-native (LE on x64). The Rust `parse_native`/`from_ne_bytes` was already correct; only the prose was wrong.
+- **DVRs are not wholly excluded**: external DVRs are reachable via the `EDVR_*` exports.
+
+### Suggested crate work (from these findings)
+
+- Add an `EdvrApi` `WrapperApi` (mirroring `VariantApi`) binding `EDVR_GetCurrentContext` / `EDVR_AddRefWithContext` / `EDVR_ReleaseRefWithContext`, behind an `edvr` feature flag.
+- Add an `LVVariant` method to read a refnum cookie from `data_ptr()` and borrow the EDVR buffer.
+- Add the `0x70` refnum case to the `typedesc` parser (recurse into referenced type).
 
 ## References
 
