@@ -50,7 +50,10 @@ impl<T: ?Sized> Deref for UPtr<T> {
 
     /// Extract the target type.
     ///
-    /// This will panic if the handle or internal pointer is null.
+    /// # Panics
+    ///
+    /// This will panic if the pointer is null.
+    /// Use [`UPtr::as_ref`] for a non-panicking alternative.
     fn deref(&self) -> &Self::Target {
         unsafe { self.as_ref().unwrap() }
     }
@@ -59,7 +62,10 @@ impl<T: ?Sized> Deref for UPtr<T> {
 impl<T: ?Sized> DerefMut for UPtr<T> {
     /// Deref to a mutable reference.
     ///
-    /// This will panic if the handle or internal pointer is null.
+    /// # Panics
+    ///
+    /// This will panic if the pointer is null.
+    /// Use [`UPtr::as_ref_mut`] for a non-panicking alternative.
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { self.as_ref_mut().unwrap() }
     }

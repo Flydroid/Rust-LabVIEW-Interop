@@ -87,11 +87,13 @@ impl<T: ?Sized> UHandle<'_, T> {
         #[cfg(feature = "link")]
         {
             // check if the memory manager actually knows about the handle if it is not null
-            let ret = unsafe {
-                crate::labview::memory_api()
-                    .unwrap()
-                    .check_handle(self.0 as usize)
+            let api = match crate::labview::memory_api() {
+                Ok(api) => api,
+                // No LabVIEW runtime means this cannot be a live LabVIEW handle,
+                // and we must not claim validity we cannot verify.
+                Err(_) => return false,
             };
+            let ret = unsafe { api.check_handle(self.0 as usize) };
             ret == crate::types::LVStatusCode::SUCCESS
         }
         #[cfg(not(feature = "link"))]
@@ -112,7 +114,10 @@ impl<T: ?Sized> Deref for UHandle<'_, T> {
 
     /// Extract the target type.
     ///
+    /// # Panics
+    ///
     /// This will panic if the handle or internal pointer is null.
+    /// Use [`UHandle::as_ref`] for a non-panicking alternative.
     fn deref(&self) -> &Self::Target {
         unsafe { self.as_ref().unwrap() }
     }
@@ -121,7 +126,10 @@ impl<T: ?Sized> Deref for UHandle<'_, T> {
 impl<T: ?Sized> DerefMut for UHandle<'_, T> {
     /// Deref to a mutable reference.
     ///
+    /// # Panics
+    ///
     /// This will panic if the handle or internal pointer is null.
+    /// Use [`UHandle::as_ref_mut`] for a non-panicking alternative.
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { self.as_ref_mut().unwrap() }
     }
@@ -231,12 +239,14 @@ mod uhandle_link_features {
             &self,
             other: *mut UHandle<'_, T>,
         ) -> crate::errors::Result<()> {
+            // Resolve the API first so an unavailable runtime reports as such
+            // rather than as an invalid handle.
+            let api = crate::labview::memory_api()?;
             // Validate this handle first to improve safety.
             if !self.valid() {
                 return Err(InternalError::InvalidHandle.into());
             }
-            let error =
-                crate::labview::memory_api()?.copy_handle(other as *mut usize, self.0 as usize);
+            let error = api.copy_handle(other as *mut usize, self.0 as usize);
             error.to_specific_result(())
         }
     }

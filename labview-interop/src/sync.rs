@@ -114,7 +114,7 @@ impl<T> LVUserEvent<T> {
     }
 }
 
-/// A LabVIEW occurence which can be used to provide synchronisation
+/// A LabVIEW occurrence which can be used to provide synchronisation
 /// between execution of Rust and LabVIEW code.
 ///
 /// From LabVIEW you can set the terminal to be `adapt to type` and `handles by value`
@@ -137,7 +137,7 @@ impl<T> LVUserEvent<T> {
 pub struct Occurence(MagicCookie);
 
 impl Occurence {
-    /// "set" generates the occurence event which can be detected by LabVIEW.
+    /// "set" generates the occurrence event which can be detected by LabVIEW.
     pub fn set(&self) -> Result<()> {
         let mg_err = unsafe { sync_api()?.occur(self.0) };
         mg_err.to_specific_result(())
