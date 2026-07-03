@@ -111,7 +111,7 @@ macro_rules! impl_variant_scalar {
 }
 
 #[cfg(feature = "variant")]
-impl_variant_scalar!(i8,  LvTypeCode::I8,  "I8");
+impl_variant_scalar!(i8, LvTypeCode::I8, "I8");
 #[cfg(feature = "variant")]
 impl_variant_scalar!(i16, LvTypeCode::I16, "I16");
 #[cfg(feature = "variant")]
@@ -119,7 +119,7 @@ impl_variant_scalar!(i32, LvTypeCode::I32, "I32");
 #[cfg(feature = "variant")]
 impl_variant_scalar!(i64, LvTypeCode::I64, "I64");
 #[cfg(feature = "variant")]
-impl_variant_scalar!(u8,  LvTypeCode::U8,  "U8");
+impl_variant_scalar!(u8, LvTypeCode::U8, "U8");
 #[cfg(feature = "variant")]
 impl_variant_scalar!(u16, LvTypeCode::U16, "U16");
 #[cfg(feature = "variant")]
@@ -282,8 +282,8 @@ impl LVVariant<'_> {
     /// - `EmptyVariant` if the handle itself is null
     pub unsafe fn is_empty(&self) -> crate::errors::Result<bool> {
         use crate::errors::InternalError;
-        let api = crate::labview::variant_api()
-            .map_err(|_| InternalError::VariantApiUnavailable)?;
+        let api =
+            crate::labview::variant_api().map_err(|_| InternalError::VariantApiUnavailable)?;
         let inner = self.inner_ptr()?;
         Ok(api.variant_is_empty(inner) != 0)
     }
@@ -304,9 +304,30 @@ impl LVVariant<'_> {
     /// - `EmptyVariant` if the handle is null or the variant is empty
     /// - `InvalidTypeDescriptor` if the type descriptor bytes cannot be parsed
     pub unsafe fn type_descriptor(&self) -> crate::errors::Result<crate::typedesc::TypeDescriptor> {
+        let td_bytes = self.type_descriptor_bytes()?;
+        crate::typedesc::parse_native(&td_bytes)
+    }
+
+    /// Returns a copy of the variant's raw in-memory type descriptor bytes
+    /// (native endianness, as returned by `GetTypeFromLvVariant`).
+    ///
+    /// Useful for capturing golden test vectors and for debugging descriptor
+    /// parsing — see [`type_descriptor`](LVVariant::type_descriptor) for the
+    /// parsed form.
+    ///
+    /// # Safety
+    ///
+    /// The variant handle must be valid and alive.
+    ///
+    /// # Errors
+    ///
+    /// - `VariantApiUnavailable` if the variant API cannot be loaded
+    /// - `EmptyVariant` if the handle is null or the variant is empty
+    /// - `BrokenVariant` if the descriptor announces an implausible length
+    pub unsafe fn type_descriptor_bytes(&self) -> crate::errors::Result<Vec<u8>> {
         use crate::errors::InternalError;
-        let api = crate::labview::variant_api()
-            .map_err(|_| InternalError::VariantApiUnavailable)?;
+        let api =
+            crate::labview::variant_api().map_err(|_| InternalError::VariantApiUnavailable)?;
         let inner = self.inner_ptr()?;
 
         let td_ptr = api.get_type_from_variant(inner);
@@ -320,9 +341,7 @@ impl LVVariant<'_> {
             return Err(InternalError::BrokenVariant.into());
         }
 
-        // Copy the type descriptor bytes to an owned buffer
-        let td_bytes = std::slice::from_raw_parts(td_ptr, len);
-        crate::typedesc::parse_native(td_bytes).map_err(Into::into)
+        Ok(std::slice::from_raw_parts(td_ptr, len).to_vec())
     }
 
     /// Returns a raw mutable pointer to the variant's underlying data.
@@ -342,8 +361,8 @@ impl LVVariant<'_> {
     pub unsafe fn data_ptr(&self) -> crate::errors::Result<*mut c_void> {
         use crate::errors::InternalError;
 
-        let api = crate::labview::variant_api()
-            .map_err(|_| InternalError::VariantApiUnavailable)?;
+        let api =
+            crate::labview::variant_api().map_err(|_| InternalError::VariantApiUnavailable)?;
 
         let inner = self.inner_ptr()?;
 

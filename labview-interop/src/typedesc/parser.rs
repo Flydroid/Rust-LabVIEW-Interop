@@ -38,11 +38,11 @@ struct Cursor<'a> {
 
 impl<'a> Cursor<'a> {
     fn new(data: &'a [u8], byte_order: ByteOrder) -> Self {
-        Self { data, pos: 0, byte_order }
-    }
-
-    fn remaining(&self) -> usize {
-        self.data.len().saturating_sub(self.pos)
+        Self {
+            data,
+            pos: 0,
+            byte_order,
+        }
     }
 
     fn read_u8(&mut self) -> Result<u8, LVInteropError> {
@@ -77,24 +77,6 @@ impl<'a> Cursor<'a> {
             ByteOrder::NativeEndian => i16::from_ne_bytes(bytes),
         };
         self.pos += 2;
-        Ok(val)
-    }
-
-    fn read_u32(&mut self) -> Result<u32, LVInteropError> {
-        if self.pos + 4 > self.data.len() {
-            return Err(parse_err("unexpected end of data reading u32"));
-        }
-        let bytes = [
-            self.data[self.pos],
-            self.data[self.pos + 1],
-            self.data[self.pos + 2],
-            self.data[self.pos + 3],
-        ];
-        let val = match self.byte_order {
-            ByteOrder::BigEndian => u32::from_be_bytes(bytes),
-            ByteOrder::NativeEndian => u32::from_ne_bytes(bytes),
-        };
-        self.pos += 4;
         Ok(val)
     }
 
@@ -385,13 +367,12 @@ fn read_name_if(
         return Ok(None);
     }
     // From h5labview: name might be aligned — if current byte is 0 and next isn't, skip one.
-    if cursor.pos < section_end {
-        if cursor.data[cursor.pos] == 0
-            && cursor.pos + 1 < section_end
-            && cursor.data[cursor.pos + 1] != 0
-        {
-            cursor.pos += 1;
-        }
+    if cursor.pos < section_end
+        && cursor.data[cursor.pos] == 0
+        && cursor.pos + 1 < section_end
+        && cursor.data[cursor.pos + 1] != 0
+    {
+        cursor.pos += 1;
     }
     if cursor.pos >= section_end {
         return Ok(None);
@@ -442,14 +423,10 @@ pub fn parse_with_order(
 ///
 /// This mirrors h5labview's `parse_array_td` which checks byte offset 3
 /// for the array type code 0x40.
-pub fn parse_with_array(
-    bytes: &[u8],
-) -> Result<(Option<u16>, TypeDescriptor), LVInteropError> {
+pub fn parse_with_array(bytes: &[u8]) -> Result<(Option<u16>, TypeDescriptor), LVInteropError> {
     let td = parse(bytes)?;
     match td {
-        TypeDescriptor::Array {
-            ndims, element, ..
-        } => Ok((Some(ndims), *element)),
+        TypeDescriptor::Array { ndims, element, .. } => Ok((Some(ndims), *element)),
         other => Ok((None, other)),
     }
 }
@@ -661,7 +638,7 @@ mod tests {
         // Enum payload: member_count (u16 BE) + N pascal strings
         let mut payload = Vec::new();
         payload.extend_from_slice(&3u16.to_be_bytes()); // 3 members
-        // Pascal strings: len byte + chars
+                                                        // Pascal strings: len byte + chars
         payload.push(3);
         payload.extend_from_slice(b"Red");
         payload.push(5);
@@ -691,10 +668,10 @@ mod tests {
         // Physical quantity: unit_count (u16) + units
         let mut payload = Vec::new();
         payload.extend_from_slice(&2u16.to_be_bytes()); // 2 unit components
-        // meter^1
+                                                        // meter^1
         payload.extend_from_slice(&3u16.to_be_bytes()); // unit code: m
         payload.extend_from_slice(&1i16.to_be_bytes()); // power: 1
-        // second^-2
+                                                        // second^-2
         payload.extend_from_slice(&2u16.to_be_bytes()); // unit code: s
         payload.extend_from_slice(&(-2i16).to_be_bytes()); // power: -2
 
@@ -709,20 +686,8 @@ mod tests {
             } => {
                 assert_eq!(base_type, LvTypeCode::PhysDbl);
                 assert_eq!(units.len(), 2);
-                assert_eq!(
-                    units[0],
-                    PhysicalUnit {
-                        unit: 3,
-                        power: 1
-                    }
-                );
-                assert_eq!(
-                    units[1],
-                    PhysicalUnit {
-                        unit: 2,
-                        power: -2
-                    }
-                );
+                assert_eq!(units[0], PhysicalUnit { unit: 3, power: 1 });
+                assert_eq!(units[1], PhysicalUnit { unit: 2, power: -2 });
                 assert_eq!(name, None);
             }
             _ => panic!("expected PhysicalQuantity, got {td:?}"),
@@ -835,13 +800,7 @@ mod tests {
                 assert_eq!(fields.len(), 2);
                 assert_eq!(fields[0].name(), Some("ints"));
                 assert_eq!(fields[1].name(), Some("vals"));
-                assert!(matches!(
-                    fields[0],
-                    TypeDescriptor::Array {
-                        ndims: 1,
-                        ..
-                    }
-                ));
+                assert!(matches!(fields[0], TypeDescriptor::Array { ndims: 1, .. }));
             }
             _ => panic!("expected Cluster"),
         }
@@ -899,11 +858,17 @@ mod tests {
                 assert_eq!(fields.len(), 2);
                 assert!(matches!(
                     fields[0],
-                    TypeDescriptor::Numeric { code: LvTypeCode::Dbl, .. }
+                    TypeDescriptor::Numeric {
+                        code: LvTypeCode::Dbl,
+                        ..
+                    }
                 ));
                 assert!(matches!(
                     fields[1],
-                    TypeDescriptor::Numeric { code: LvTypeCode::I32, .. }
+                    TypeDescriptor::Numeric {
+                        code: LvTypeCode::I32,
+                        ..
+                    }
                 ));
             }
             _ => panic!("expected Cluster, got {td:?}"),
@@ -926,7 +891,10 @@ mod tests {
                 assert_eq!(ndims, 1);
                 assert_eq!(
                     *element,
-                    TypeDescriptor::Numeric { code: LvTypeCode::I32, name: None }
+                    TypeDescriptor::Numeric {
+                        code: LvTypeCode::I32,
+                        name: None
+                    }
                 );
             }
             _ => panic!("expected Array, got {td:?}"),

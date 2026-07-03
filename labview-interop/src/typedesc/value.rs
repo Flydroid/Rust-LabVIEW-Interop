@@ -64,13 +64,24 @@ pub enum LvValue {
     /// Raw string bytes (LabVIEW strings are byte strings, not UTF-8).
     String(Vec<u8>),
     /// LabVIEW timestamp: seconds since 1904-01-01 UTC + 2^-64 fractions.
-    Timestamp { seconds: i64, fractions: u64 },
+    Timestamp {
+        seconds: i64,
+        fractions: u64,
+    },
     /// Enum value with the resolved member name where in range.
-    Enum { value: u32, member: Option<String> },
+    Enum {
+        value: u32,
+        member: Option<String>,
+    },
     /// Refnum magic cookie. Note the cookie value varies between runs.
-    Refnum { cookie: u32 },
+    Refnum {
+        cookie: u32,
+    },
     /// N-dimensional array; elements in row-major order.
-    Array { dims: Vec<usize>, elements: Vec<LvValue> },
+    Array {
+        dims: Vec<usize>,
+        elements: Vec<LvValue>,
+    },
     /// Cluster fields in order, with names where the descriptor carries them.
     Cluster(Vec<(Option<String>, LvValue)>),
     /// Type is parseable but not yet readable (complex, waveform, map, set,
@@ -110,9 +121,9 @@ pub unsafe fn read_value(
 
         TypeDescriptor::Numeric { code, .. } => Ok(read_numeric(*code, ptr)),
 
-        TypeDescriptor::Boolean { .. } => {
-            Ok(LvValue::Bool(std::ptr::read_unaligned(ptr as *const u8) != 0))
-        }
+        TypeDescriptor::Boolean { .. } => Ok(LvValue::Bool(
+            std::ptr::read_unaligned(ptr as *const u8) != 0,
+        )),
 
         TypeDescriptor::String { .. } => read_string(ptr),
 
@@ -605,8 +616,7 @@ mod tests {
         let mut buf = vec![0u8; td.size()];
         buf[0] = 1;
         let handle_bytes = (handle as usize).to_ne_bytes();
-        buf[str_offset..str_offset + std::mem::size_of::<usize>()]
-            .copy_from_slice(&handle_bytes);
+        buf[str_offset..str_offset + std::mem::size_of::<usize>()].copy_from_slice(&handle_bytes);
 
         let read = unsafe { read_value(&td, buf.as_ptr() as *const c_void) }.unwrap();
         assert_eq!(read.to_string(), "{flag=true,name=\"abc\"}");

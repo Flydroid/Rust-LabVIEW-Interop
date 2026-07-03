@@ -80,19 +80,22 @@ fn capped_alignment(align: usize) -> usize {
 
 /// Waveform subcode-to-type-code mapping.
 /// Reference: h5labview `typeconv.c` `waveform_to_tc` function.
+/// Not yet wired into `size()` — waveform layout support is pending
+/// empirical validation of the Waveform struct padding.
+#[allow(dead_code)]
 fn waveform_numeric_size(subcode: u8) -> usize {
     match subcode {
-        0x14 => 1,  // I8
-        0x11 => 1,  // U8
-        0x02 => 2,  // I16
-        0x12 => 2,  // U16
-        0x15 => 4,  // I32
-        0x13 => 4,  // U32
-        0x19 => 8,  // I64
-        0x20 => 8,  // U64
-        0x05 => 4,  // SGL
-        0x03 => 8,  // DBL
-        _ => 8,     // Default to DBL
+        0x14 => 1, // I8
+        0x11 => 1, // U8
+        0x02 => 2, // I16
+        0x12 => 2, // U16
+        0x15 => 4, // I32
+        0x13 => 4, // U32
+        0x19 => 8, // I64
+        0x20 => 8, // U64
+        0x05 => 4, // SGL
+        0x03 => 8, // DBL
+        _ => 8,    // Default to DBL
     }
 }
 

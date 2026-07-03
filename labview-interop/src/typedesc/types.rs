@@ -109,7 +109,7 @@ impl LvTypeCode {
     /// E.g., `PhysDbl` (0x1A) → `Dbl` (0x0A).
     pub fn physical_to_numeric(self) -> Option<LvTypeCode> {
         let raw = self as u8;
-        if raw >= 0x19 && raw <= 0x1E {
+        if (0x19..=0x1E).contains(&raw) {
             LvTypeCode::try_from(raw - 0x10).ok()
         } else {
             None
@@ -181,13 +181,9 @@ pub enum TypeDescriptor {
         name: Option<String>,
     },
     /// Boolean (1 byte, LabVIEW code 0x21)
-    Boolean {
-        name: Option<String>,
-    },
+    Boolean { name: Option<String> },
     /// LabVIEW string (handle type, code 0x30)
-    String {
-        name: Option<String>,
-    },
+    String { name: Option<String> },
     /// Enumeration with member names
     Enum {
         /// Base storage type (EnumU8, EnumU16, or EnumU32)
@@ -216,9 +212,7 @@ pub enum TypeDescriptor {
         name: Option<String>,
     },
     /// Timestamp (LabVIEW epoch 1904-01-01, i64 seconds + u64 fractional)
-    Timestamp {
-        name: Option<String>,
-    },
+    Timestamp { name: Option<String> },
     /// Physical quantity (numeric with SI units)
     PhysicalQuantity {
         /// Underlying numeric type code
@@ -228,13 +222,9 @@ pub enum TypeDescriptor {
         name: Option<String>,
     },
     /// LabVIEW path type (code 0x32)
-    Path {
-        name: Option<String>,
-    },
+    Path { name: Option<String> },
     /// LabVIEW Variant type (code 0x53, opaque)
-    Variant {
-        name: Option<String>,
-    },
+    Variant { name: Option<String> },
     /// Refnum (code 0x70) — DVR, queue, event, etc.
     ///
     /// The runtime data for a refnum is a 4-byte magic cookie.

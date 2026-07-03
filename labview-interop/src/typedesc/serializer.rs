@@ -108,8 +108,8 @@ fn write_section(buf: &mut Vec<u8>, td: &TypeDescriptor, order: ByteOrder) {
 
         TypeDescriptor::Timestamp { .. } => {
             put_u16(buf, 6, order); // waveform subcode 6 = timestamp
-            // Minimal embedded cluster block: length 2 = just the length
-            // field, nothing for the parser to skip. See module caveat.
+                                    // Minimal embedded cluster block: length 2 = just the length
+                                    // field, nothing for the parser to skip. See module caveat.
             put_u16(buf, 2, order);
         }
 
@@ -271,8 +271,7 @@ mod tests {
     fn round_trip_big_endian() {
         for td in round_trip_fixtures() {
             let bytes = td.to_bytes();
-            let parsed = parse(&bytes)
-                .unwrap_or_else(|e| panic!("failed to re-parse {td:?}: {e}"));
+            let parsed = parse(&bytes).unwrap_or_else(|e| panic!("failed to re-parse {td:?}: {e}"));
             assert_eq!(parsed, td, "big-endian round trip mismatch");
         }
     }
