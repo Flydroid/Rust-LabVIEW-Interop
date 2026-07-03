@@ -649,9 +649,13 @@ This serializer is essential for the write-into-variant path: the DLL (or a cons
 
 ## Testing Strategy
 
-The strategy is built around one principle: **because every LabVIEW test VI is
-hand-coded, adding a type to the test matrix must cost one array element in a
-VI — never a new VI, a new Rust export, or a new CLFN configuration.**
+The strategy is built around one principle: **adding a type to the test
+matrix must never require a new Rust export or a new CLFN configuration** —
+the generic oracle export handles every type. VI count is unconstrained:
+prefer many small, single-purpose case VIs (idiomatic LabVIEW) over one
+monolithic case diagram. The detailed LabVIEW build sheet (VI inventory,
+exact CLFN definitions, case tables with expected strings, g-cli
+integration) is in [variant-labview-test-plan.md](variant-labview-test-plan.md).
 
 Four pillars:
 
@@ -694,19 +698,23 @@ return = I32 (same pattern as the pre-existing `test_variant_read_string`).
 
 ### Manual VI work (hand-coded once)
 
-1. **`Variant Tests.lvclass`** — VI Tester class (copy the `Data Structure
-   Tests` pattern: setUp/tearDown/testExample), registered in
+Full build sheet with CLFN tables and per-case expected strings:
+[variant-labview-test-plan.md](variant-labview-test-plan.md). Summary:
+
+1. **`Variant Tests.lvclass`** — VI Tester class (copy the `String Tests`
+   pattern: setUp/tearDown/testExample), registered in
    `rust-interop-test.lvproj`.
-2. **`Build Variant Cases.vi`** — the single shared case builder returning an
-   array of `{name: string, category: string, data: variant, expected: string}`
-   clusters. *All* test constants live here; a new type = one new array element.
-3. **Test methods** — `test Variant Scalars.vi`, `… Arrays.vi`,
-   `… Clusters.vi`, `… Nested.vi`, `… Special.vi`: each filters the case array
-   by category, calls the `variant_to_canonical_string` CLFN per case, and
-   compares strings (report the case `name` on failure).
-4. **`Capture Golden Vectors.vi`** (standalone, not a test) — iterates the
-   same case builder; per case calls `variant_typedesc_hex`, takes the
-   typestr from `Variant To Flattened String` (type-cast to string → hex),
+2. **Per-category case VIs** (`Cases Scalars.vi`, `Cases Strings.vi`,
+   `Cases Arrays.vi`, `Cases Clusters.vi`, `Cases Nested.vi`,
+   `Cases Special.vi`) — each returns an array of
+   `{name, data: variant, expected: string, expected status: i32}` clusters;
+   `Build All Cases.vi` concatenates them for the capture VI. Many small VIs
+   are fine; the shared `Check Cases.vi` engine does the CLFN call + compare.
+3. **Test methods** — one per category, calling its case VI through
+   `Check Cases.vi` and asserting with the failure report.
+4. **`Capture Golden Vectors.vi`** (standalone, not a test) — iterates
+   `Build All Cases.vi`; per case calls `variant_typedesc_hex`, takes the
+   typestr from `Variant To Flattened String` (type string → bytes → hex),
    and appends `name<TAB>native_hex<TAB>flattened_hex<TAB>expected` lines to
    `labview-interop/tests/golden/captured.tsv`. Commit the file.
 5. **Large-array test** — 1M-element DBL array → `variant_dbl_array_sum`
