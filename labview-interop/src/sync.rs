@@ -89,7 +89,7 @@ impl<T> LVUserEvent<T> {
     /// );
     /// #[no_mangle]
     /// pub extern "C" fn send_event(lv_user_event: *mut LVUserEvent<MyEvent>) -> LVStatusCode {
-    ///     let event = unsafe { *lv_user_event };
+    ///     let event = unsafe { &*lv_user_event };
     ///     let data = MyEvent {
     ///         message: LStrOwned::from_data(b"hello").unwrap(),
     ///     };
