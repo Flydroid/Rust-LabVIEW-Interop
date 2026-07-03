@@ -89,7 +89,9 @@ impl<T: ?Sized> UHandle<'_, T> {
             // check if the memory manager actually knows about the handle if it is not null
             let api = match crate::labview::memory_api() {
                 Ok(api) => api,
-                Err(_) => return true, // if we can't check, assume valid since pointer is non-null
+                // No LabVIEW runtime means this cannot be a live LabVIEW handle,
+                // and we must not claim validity we cannot verify.
+                Err(_) => return false,
             };
             let ret = unsafe { api.check_handle(self.0 as usize) };
             ret == crate::types::LVStatusCode::SUCCESS
@@ -237,12 +239,14 @@ mod uhandle_link_features {
             &self,
             other: *mut UHandle<'_, T>,
         ) -> crate::errors::Result<()> {
+            // Resolve the API first so an unavailable runtime reports as such
+            // rather than as an invalid handle.
+            let api = crate::labview::memory_api()?;
             // Validate this handle first to improve safety.
             if !self.valid() {
                 return Err(InternalError::InvalidHandle.into());
             }
-            let error =
-                crate::labview::memory_api()?.copy_handle(other as *mut usize, self.0 as usize);
+            let error = api.copy_handle(other as *mut usize, self.0 as usize);
             error.to_specific_result(())
         }
     }
