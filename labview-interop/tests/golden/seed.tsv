@@ -1,0 +1,10 @@
+# Golden type descriptor vectors captured from real LabVIEW runtimes.
+# Format: name <TAB> typedesc_native_hex <TAB> typestr_flattened_hex <TAB> canonical
+# - typedesc_native_hex: variant_typedesc_hex export (GetTypeFromLvVariant bytes, host-native)
+# - typestr_flattened_hex: Variant To Flattened String typestr (big-endian)
+# - canonical: expected variant_to_canonical_string output (informational for Rust tests)
+# Empty fields are allowed. Append records via Capture Golden Vectors.vi.
+#
+# Seed record: EDVR refnum -> 2-D DBL array, captured on LabVIEW 2025 x64
+# (docs/variant-implementation-plan.md, "Verified Findings").
+edvr_2d_dbl_array	2a00704020001a0040000200ffffffffffffffff0c000a40074e756d6572696308454456525f52656600
