@@ -162,8 +162,8 @@ fn golden_vectors() {
         if path.extension().and_then(|e| e.to_str()) != Some("tsv") {
             continue;
         }
-        let content = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("cannot read {path:?}: {e}"));
+        let content =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {path:?}: {e}"));
 
         for (line_no, line) in content.lines().enumerate() {
             let line = line.trim_end_matches('\r');
@@ -179,8 +179,8 @@ fn golden_vectors() {
             let native_td = if native_hex.is_empty() {
                 None
             } else {
-                let bytes = hex_decode(native_hex)
-                    .unwrap_or_else(|e| panic!("{context}: native hex: {e}"));
+                let bytes =
+                    hex_decode(native_hex).unwrap_or_else(|e| panic!("{context}: native hex: {e}"));
                 let td = parse_native(&bytes)
                     .unwrap_or_else(|e| panic!("{context}: parse_native failed: {e}"));
                 round_trips(&td, ByteOrder::NativeEndian, &context);
@@ -192,8 +192,7 @@ fn golden_vectors() {
             } else {
                 let bytes = hex_decode(flattened_hex)
                     .unwrap_or_else(|e| panic!("{context}: flattened hex: {e}"));
-                let td =
-                    parse(&bytes).unwrap_or_else(|e| panic!("{context}: parse failed: {e}"));
+                let td = parse(&bytes).unwrap_or_else(|e| panic!("{context}: parse failed: {e}"));
                 round_trips(&td, ByteOrder::BigEndian, &context);
                 Some(td)
             };

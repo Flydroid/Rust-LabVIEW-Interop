@@ -27,10 +27,7 @@ fn num(code: LvTypeCode) -> TypeDescriptor {
 }
 
 fn cluster(fields: Vec<TypeDescriptor>) -> TypeDescriptor {
-    TypeDescriptor::Cluster {
-        fields,
-        name: None,
-    }
+    TypeDescriptor::Cluster { fields, name: None }
 }
 
 fn array(ndims: u16, element: TypeDescriptor) -> TypeDescriptor {

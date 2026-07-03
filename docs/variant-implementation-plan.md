@@ -614,6 +614,11 @@ Error codes assigned from the 542,000 range per crate convention.
 
 ### Step 10: Type Descriptor Serializer
 
+**Status: implemented** in `typedesc/serializer.rs` (`to_bytes()` /
+`to_bytes_with_order()`), with round-trip tests over every descriptor shape
+in both byte orders and byte-for-byte identity against the captured EDVR
+descriptor.
+
 **File**: `typedesc/parser.rs`
 
 Port logic from h5labview's `H5LVquery_type` (`typeconv.c:583–860`), which is the exact reverse of `recurse_typedesc`.
@@ -644,43 +649,140 @@ This serializer is essential for the write-into-variant path: the DLL (or a cons
 
 ## Testing Strategy
 
-### Unit Tests (no LabVIEW required)
+The strategy is built around one principle: **because every LabVIEW test VI is
+hand-coded, adding a type to the test matrix must cost one array element in a
+VI — never a new VI, a new Rust export, or a new CLFN configuration.**
 
-Run via `cargo test -- --test-threads=1`.
+Four pillars:
 
-| Test | What It Verifies |
-|------|-----------------|
-| Parse scalar U32 | Correct type code, no name, size=4, align=4 |
-| Parse scalar with name | Name flag `0x40` correctly extracts pascal string |
-| Parse 1D array of DBL | `parse_with_array` returns ndims=1, element=Dbl |
-| Parse cluster of {String, I32, Boolean} | Recursive parsing, correct field order |
-| Parse enum with 3 members | Member strings extracted correctly |
-| Parse nested cluster-of-arrays | Deep recursion works |
-| Parse waveform (timestamp vs numeric) | Subcode dispatch |
-| Size/alignment: I32 on Win64 | size=4, align=4 |
-| Size/alignment: cluster {U8, U32} on Win64 | offset_of(1)=4 (padded), total=8 |
-| Size/alignment: cluster {U8, U32} on Win32 | offset_of(1)=1 (packed), total=5 |
-| Round-trip: parse → to_bytes → parse | Equality for all supported types |
-| Parse Map of {String → I32} | Key/value type headers and nested recursion |
-| Parse Set of DBL | Element type header and count |
-| Parse Path | `0x32` type code, `0xFFFFFFFF` marker |
-| Parse Void | `0x00` type code, empty payload |
-| Cross-validate with labview-variant-data | Parse hex bytes from Python test vectors |
-| Invalid type code | Returns `Err(InvalidTypeDescriptor)` |
-| Truncated input | Returns `Err(InvalidTypeDescriptor)` |
+1. **Generic oracle (implemented)** — `typedesc::read_value` walks a variant's
+   own type descriptor + the layout engine and renders any supported value as
+   a deterministic **canonical string** (`LvValue`'s `Display`; format table in
+   `typedesc/value.rs` module docs). One DLL export handles every type.
+2. **Data-driven VIs (manual, spec below)** — one VI Tester class whose test
+   methods loop over arrays of `{name, variant, expected canonical string}`
+   built in a single shared case-builder VI.
+3. **Golden vectors (capture VI → CI forever)** — each case's raw descriptor
+   bytes (both access paths) are dumped to `labview-interop/tests/golden/*.tsv`
+   and checked in. `tests/golden_typedesc.rs` re-validates them on every
+   `cargo test`, LabVIEW-free. One manual capture run becomes permanent CI
+   coverage against *real* LabVIEW bytes — this closes the self-referential
+   test-vector gap (unit tests that build bytes with the same assumptions the
+   parser decodes).
+4. **CI cross-checks (implemented)** — `tests/layout_crosscheck.rs` compares
+   the layout engine against `labview_layout!` `repr(C)` mirror structs on
+   Windows (torture clusters incl. tail-padding stride and deep nesting), and
+   `typedesc/value.rs` unit tests exercise `read_value` against fabricated
+   memory blobs (strings and arrays through real handle chains).
 
-### LabVIEW Integration Tests
+### Rust-side pieces (implemented)
 
-Test VIs that:
-1. Create Variant containing known data (scalar I32 = 42, 1D DBL array, cluster)
-2. Extract type descriptor via `Variant To Flattened String` → type cast to string
-3. Call test CLFN passing typestr + Variant handle
-4. DLL parses type descriptor, calls `LvVariantGetDataPtr`, reads value
-5. DLL returns value/checksum for verification on LabVIEW side
+| Piece | Location |
+|-------|----------|
+| `LvValue` + `read_value` + canonical `Display` | `typedesc/value.rs` |
+| `LVVariant::to_value()` (dynamic Variant-To-Data) | `types/variant.rs` |
+| `LVVariant::type_descriptor_bytes()` (raw capture) | `types/variant.rs` |
+| `TypeDescriptor::to_bytes()` serializer (Step 10) + round-trip tests | `typedesc/serializer.rs` |
+| Refnum `0x70` parse/layout + real EDVR golden bytes test | `typedesc/{types,parser,layout}.rs` |
+| `variant_to_canonical_string` / `variant_typedesc_hex` / `variant_dbl_array_sum` exports (all panic-safe) | `labview-test-library/src/variants.rs` |
+| Golden-vector regression test (TSV) | `labview-interop/tests/golden_typedesc.rs` |
+| Layout engine vs `repr(C)` cross-checks | `labview-interop/tests/layout_crosscheck.rs` |
 
-**Large dataset test**: 1M-element DBL array Variant — confirm zero-copy (no flatten overhead, data pointer points into variant's own memory).
+Only **two CLFN configurations** exist for the whole oracle: variant =
+*Adapt to Type / Handles by Value*; string out = *String / Handles by Value*;
+return = I32 (same pattern as the pre-existing `test_variant_read_string`).
 
-**Bidirectional test**: LabVIEW creates empty 1D I32 array Variant via `TypeToVariant.vi`, passes to DLL. DLL resizes array handle to 100 elements, writes values 0..99, returns. LabVIEW reads populated Variant via `Variant To Data` and verifies contents.
+### Manual VI work (hand-coded once)
+
+1. **`Variant Tests.lvclass`** — VI Tester class (copy the `Data Structure
+   Tests` pattern: setUp/tearDown/testExample), registered in
+   `rust-interop-test.lvproj`.
+2. **`Build Variant Cases.vi`** — the single shared case builder returning an
+   array of `{name: string, category: string, data: variant, expected: string}`
+   clusters. *All* test constants live here; a new type = one new array element.
+3. **Test methods** — `test Variant Scalars.vi`, `… Arrays.vi`,
+   `… Clusters.vi`, `… Nested.vi`, `… Special.vi`: each filters the case array
+   by category, calls the `variant_to_canonical_string` CLFN per case, and
+   compares strings (report the case `name` on failure).
+4. **`Capture Golden Vectors.vi`** (standalone, not a test) — iterates the
+   same case builder; per case calls `variant_typedesc_hex`, takes the
+   typestr from `Variant To Flattened String` (type-cast to string → hex),
+   and appends `name<TAB>native_hex<TAB>flattened_hex<TAB>expected` lines to
+   `labview-interop/tests/golden/captured.tsv`. Commit the file.
+5. **Large-array test** — 1M-element DBL array → `variant_dbl_array_sum`
+   CLFN; verify sum/length and time the call (zero-copy: no flatten, no
+   per-element work; the DLL reads one `&[f64]` slice in place).
+6. **Torture-cluster `.ctl` typedefs** (sentinel values distinct per field so
+   any wrong offset is detected):
+
+| Ctl | Fields | What it proves |
+|-----|--------|----------------|
+| `PadA` | `{a: U8, b: U64}` | classic 7-byte pad |
+| `PadB` | `{a: U8, b: U16, c: U8, d: U32, e: U8, f: U64}` | every alignment class |
+| `Tail` | `{a: U64, b: U8}` — used **inside a 3-element array** | array-of-cluster stride = 16, not 9 |
+| `NestedMid` | `{a: U8, inner: {x: U8, y: U32}, b: U8}` | nested-cluster alignment |
+| `HandleMix` | `{f1: Bool, name: Str, f2: Bool, data: 1D DBL, f3: Bool}` | handles interleaved with 1-byte fields |
+| `Deep` | `{a: {b: {c: {v: I32}}}}` | recursion depth |
+| `TimeCluster` | `{tag: U8, t: Timestamp}` | **decides the open timestamp-alignment question** |
+| `ArrInClus` | `{id: U16, values: 1D I32, mat: 2D DBL}` | arrays inside clusters |
+
+Version note: the justfile drives VI Tester with LabVIEW **2020** by default
+while the variant findings were verified on LabVIEW **2025** — save the VIs
+for the version you will run and pass `lv_ver` to `just integration-tests-x64`
+accordingly.
+
+### Type coverage matrix
+
+Contexts each type should eventually appear in: top-level · in cluster · in
+nested cluster · array element · array-in-cluster · cluster-in-array.
+
+- **Tier 1 (must pass now):** i8–i64, u8–u64, f32, f64, bool, string; 1-D
+  numeric arrays; flat mixed clusters; nested clusters 2–3 deep; array of
+  clusters; cluster holding string + array.
+- **Tier 2:** 2-D/3-D arrays; empty array; empty string; timestamp (top-level
+  and in cluster); enums U8/U16/U32; 1M-element DBL array; the tail-padding
+  stride cases.
+- **Tier 3 (parse-only today → canonical renders `unsupported(...)`):**
+  complex CSG/CDB, waveform, map, set, path, variant-in-cluster, refnum/EDVR,
+  physical quantity, extended float. Capture golden vectors for these anyway —
+  descriptor parsing is validated even where the reader punts.
+
+### Open questions the integration tests must answer
+
+1. **Timestamp alignment in clusters** — the layout engine follows h5labview
+   (align 4); `repr(C)`/`labview_layout!` gives 8. `TimeCluster` decides;
+   fix the losing side and update the documented-discrepancy test in
+   `layout_crosscheck.rs` to a plain equality.
+2. **Linux/macOS alignment cap** — h5labview says 4; unverified for modern
+   64-bit Linux LabVIEW. Needs a golden capture on Linux (the Windows
+   `repr(C)` cross-check intentionally excludes non-Windows).
+3. **Waveform in-memory layout** — the `Waveform` struct padding is
+   reverse-engineered and the layout engine's waveform size is approximate;
+   capture + probe before wiring waveforms into `read_value`.
+4. **Refnum payloads for other kinds** — only one empirical sample exists
+   (external DVR, kind 0x0020); the parser's nested-descriptor detection is
+   deliberately tolerant until more kinds are captured.
+5. **`TypeToVariant.vi` acceptance** — `to_bytes()` output round-trips through
+   our parser (including byte-for-byte identity for the EDVR sample), but its
+   timestamp encoding uses a minimal placeholder block; validate against
+   `TypeToVariant.vi` before relying on it for the write path.
+
+### Deferred (next milestones)
+
+- **Write-into-variant path + bidirectional test** — LabVIEW creates an empty
+  typed variant via `TypeToVariant.vi`; the DLL walks the descriptor, resizes
+  handles (`NumericArrayResize`/`DSSetHandleSize`), writes a deterministic
+  pattern; LabVIEW verifies via `Variant To Data`. Requires the read-path
+  harness above to have validated the layout engine first.
+- **`EdvrApi` bindings + refnum-cookie borrow method** (see Verified Findings).
+- **Variant attribute bindings** (`LvVariantGetAttribute`/`SetAttribute`).
+- **Flattened-variant container format** (version 0x18008000 LUT). Note:
+  cross-validation against the labview-variant-data Python library was
+  assessed and deferred — its serializer emits only the LUT'd flattened form,
+  where nested types are referenced by LUT index rather than inline, so its
+  output is not directly consumable by the inline-recursive typestr parser.
+  The golden capture's `Variant To Flattened String` typestr column provides
+  the independent big-endian vectors instead.
 
 ## Application: lv-zenoh Polymorphic API
 
@@ -895,8 +997,8 @@ From the **Variant alone**, in pure C, both halves are available:
 ### Suggested crate work (from these findings)
 
 - Add an `EdvrApi` `WrapperApi` (mirroring `VariantApi`) binding `EDVR_GetCurrentContext` / `EDVR_AddRefWithContext` / `EDVR_ReleaseRefWithContext`, behind an `edvr` feature flag.
-- Add an `LVVariant` method to read a refnum cookie from `data_ptr()` and borrow the EDVR buffer.
-- Add the `0x70` refnum case to the `typedesc` parser (recurse into referenced type).
+- Add an `LVVariant` method to read a refnum cookie from `data_ptr()` and borrow the EDVR buffer. *(Partially done: `read_value` reads the cookie as `LvValue::Refnum`; the EDVR borrow awaits `EdvrApi`.)*
+- ~~Add the `0x70` refnum case to the `typedesc` parser (recurse into referenced type).~~ **Done** — including the corrected native header byte order (`[code][flags]` on little-endian, since the flags/code pair is a byte-ordered u16) and the captured descriptor as a golden test.
 
 ## References
 
